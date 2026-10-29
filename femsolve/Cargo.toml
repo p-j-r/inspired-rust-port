@@ -1,0 +1,25 @@
+[package]
+name = "femsolve"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Generic (real/complex) solver building blocks for FEM eigenproblems: Krylov-Schur, shift-and-invert with symbolic reuse, Matrix Market export"
+license = "BSD-2-Clause"
+repository = "https://github.com/p-j-r/inspired-rust-port"
+
+[dependencies]
+# All faer calls live in `dense/hermitian.rs` and `direct.rs` so that moving to another faer
+# version (nyx may pin a different one) only touches those two files.
+faer = { version = "0.24.4", default-features = false, features = ["std", "rayon", "sparse-linalg"] }
+num-complex = "0.4"
+rayon = { version = "1", optional = true }
+
+[features]
+default = []
+# Chunk-parallel vector and basis kernels on rayon. Results stay bit-identical to the serial
+# build because chunk boundaries and the fold order are fixed (see `par.rs`).
+parallel = ["dep:rayon"]
+
+[dev-dependencies]
+proptest = "1"
+
