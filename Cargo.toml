@@ -13,11 +13,11 @@ repository = "https://github.com/p-j-r/inspired-rust-port"
 
 [features]
 default = []
-# Deterministic chunked multithreading (rayon) for SpMV, BLAS-1 and basis kernels.
-parallel = ["dep:rayon"]
+# Deterministic chunked multithreading (a persistent spinning thread team) for SpMV,
+# BLAS-1 and basis kernels.
+parallel = []
 
 [dependencies]
-rayon = { version = "1", optional = true }
 
 [dev-dependencies]
 proptest = "1"

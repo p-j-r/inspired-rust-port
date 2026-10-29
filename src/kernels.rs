@@ -93,71 +93,6 @@ macro_rules! define_kernels {
             }
         }
 
-        /// `part[j] = V[s..e, j]ᵀ w[s..e]` for `j < part.len()`; `data` holds columns of length `n`.
-        ///
-        /// Four columns are streamed concurrently so `w` is loaded once per four columns and the
-        /// memory system sees four long sequential streams instead of one short one per column.
-        /// Each column keeps 8 partial sums combined by a fixed pairwise tree.
-        $(#[$attr])*
-        pub unsafe fn dots_cols(data: &[f64], n: usize, s: usize, e: usize, w: &[f64], part: &mut [f64]) {
-            const L: usize = 8;
-            let len = e - s;
-            let wv = &w[s..e];
-            let body = len - len % L;
-            let k = part.len();
-            let tree = |a: [f64; L]| -> f64 {
-                ((a[0] + a[4]) + (a[1] + a[5])) + ((a[2] + a[6]) + (a[3] + a[7]))
-            };
-            let mut j = 0;
-            while j + 4 <= k {
-                let c0 = &data[j * n + s..j * n + e];
-                let c1 = &data[(j + 1) * n + s..(j + 1) * n + e];
-                let c2 = &data[(j + 2) * n + s..(j + 2) * n + e];
-                let c3 = &data[(j + 3) * n + s..(j + 3) * n + e];
-                let (mut a0, mut a1, mut a2, mut a3) = ([0.0f64; L], [0.0f64; L], [0.0f64; L], [0.0f64; L]);
-                let mut i = 0;
-                while i < body {
-                    for l in 0..L {
-                        let wl = wv[i + l];
-                        a0[l] += c0[i + l] * wl;
-                        a1[l] += c1[i + l] * wl;
-                        a2[l] += c2[i + l] * wl;
-                        a3[l] += c3[i + l] * wl;
-                    }
-                    i += L;
-                }
-                let (mut t0, mut t1, mut t2, mut t3) = (0.0, 0.0, 0.0, 0.0);
-                for i in body..len {
-                    t0 += c0[i] * wv[i];
-                    t1 += c1[i] * wv[i];
-                    t2 += c2[i] * wv[i];
-                    t3 += c3[i] * wv[i];
-                }
-                part[j] = tree(a0) + t0;
-                part[j + 1] = tree(a1) + t1;
-                part[j + 2] = tree(a2) + t2;
-                part[j + 3] = tree(a3) + t3;
-                j += 4;
-            }
-            while j < k {
-                let c = &data[j * n + s..j * n + e];
-                let mut a = [0.0f64; L];
-                let mut i = 0;
-                while i < body {
-                    for l in 0..L {
-                        a[l] += c[i + l] * wv[i + l];
-                    }
-                    i += L;
-                }
-                let mut t = 0.0;
-                for i in body..len {
-                    t += c[i] * wv[i];
-                }
-                part[j] = tree(a) + t;
-                j += 1;
-            }
-        }
-
         /// `wc -= Σ_j h[j] V[s.., j]` over `k` columns (a chunk of `wc.len()` rows starting at `s`).
         $(#[$attr])*
         pub unsafe fn sub_cols(data: &[f64], n: usize, s: usize, k: usize, h: &[f64], wc: &mut [f64]) {
@@ -213,21 +148,193 @@ macro_rules! define_kernels {
     };
 }
 
+#[cfg(target_arch = "x86_64")]
+macro_rules! dots_cols_simd {
+    ($(#[$attr:meta])* $name:ident, $vt:ty, $w:expr, $zero:ident, $load:ident, $mul:ident, $add:ident, $store:ident) => {
+        /// `part[j] = V[s..e, j]ᵀ w` (`w` holds rows `s..e` only) for `j < part.len()`; `data` holds
+        /// columns of length `n`. Four columns stream concurrently so `w` is loaded once per
+        /// four columns. Column `j` keeps eight partial sums (lane `l` takes rows `≡ l mod 8`),
+        /// combined by a fixed pairwise tree, then the scalar tail is added.
+        $(#[$attr])*
+        pub unsafe fn $name(data: &[f64], n: usize, s: usize, e: usize, w: &[f64], part: &mut [f64]) {
+            unsafe {
+                const NV: usize = 8 / $w;
+                let len = e - s;
+                let body = len - len % 8;
+                let k = part.len();
+                debug_assert!(w.len() == len && data.len() >= k * n);
+                let wp = w.as_ptr();
+                macro_rules! reduce {
+                    ($acc:expr) => {{
+                        let mut lanes = [0.0f64; 8];
+                        for v in 0..NV {
+                            $store(lanes.as_mut_ptr().add(v * $w), $acc[v]);
+                        }
+                        ((lanes[0] + lanes[4]) + (lanes[1] + lanes[5])) + ((lanes[2] + lanes[6]) + (lanes[3] + lanes[7]))
+                    }};
+                }
+                let mut j = 0;
+                while j + 4 <= k {
+                    let p0 = data.as_ptr().add(j * n + s);
+                    let p1 = data.as_ptr().add((j + 1) * n + s);
+                    let p2 = data.as_ptr().add((j + 2) * n + s);
+                    let p3 = data.as_ptr().add((j + 3) * n + s);
+                    let z: $vt = $zero();
+                    let (mut a0, mut a1, mut a2, mut a3) = ([z; NV], [z; NV], [z; NV], [z; NV]);
+                    let mut i = 0;
+                    while i < body {
+                        for v in 0..NV {
+                            let o = i + v * $w;
+                            let wl = $load(wp.add(o));
+                            a0[v] = $add(a0[v], $mul($load(p0.add(o)), wl));
+                            a1[v] = $add(a1[v], $mul($load(p1.add(o)), wl));
+                            a2[v] = $add(a2[v], $mul($load(p2.add(o)), wl));
+                            a3[v] = $add(a3[v], $mul($load(p3.add(o)), wl));
+                        }
+                        i += 8;
+                    }
+                    let (mut t0, mut t1, mut t2, mut t3) = (0.0, 0.0, 0.0, 0.0);
+                    for i in body..len {
+                        let wi = *wp.add(i);
+                        t0 += *p0.add(i) * wi;
+                        t1 += *p1.add(i) * wi;
+                        t2 += *p2.add(i) * wi;
+                        t3 += *p3.add(i) * wi;
+                    }
+                    part[j] = reduce!(a0) + t0;
+                    part[j + 1] = reduce!(a1) + t1;
+                    part[j + 2] = reduce!(a2) + t2;
+                    part[j + 3] = reduce!(a3) + t3;
+                    j += 4;
+                }
+                while j < k {
+                    let p = data.as_ptr().add(j * n + s);
+                    let mut a = [$zero(); NV];
+                    let mut i = 0;
+                    while i < body {
+                        for v in 0..NV {
+                            let o = i + v * $w;
+                            a[v] = $add(a[v], $mul($load(p.add(o)), $load(wp.add(o))));
+                        }
+                        i += 8;
+                    }
+                    let mut t = 0.0;
+                    for i in body..len {
+                        t += *p.add(i) * *wp.add(i);
+                    }
+                    part[j] = reduce!(a) + t;
+                    j += 1;
+                }
+            }
+        }
+    };
+}
+
+/// Scalar reference for [`dots_cols`] (non-x86 targets). Written with explicit SIMD per tier on
+/// x86_64 because LLVM does not vectorise the eight-lane accumulators reliably (it spills them
+/// to the stack on some target-cpu settings); the summation order here is the contract that
+/// every tier reproduces bit for bit.
+#[cfg_attr(target_arch = "x86_64", allow(dead_code))]
+/// `part[j] = V[s..e, j]ᵀ w` (`w` holds rows `s..e` only) for `j < part.len()`; `data` holds columns of length `n`.
+///
+/// Four columns are streamed concurrently so `w` is loaded once per four columns and the
+/// memory system sees four long sequential streams instead of one short one per column.
+/// Each column keeps 8 partial sums combined by a fixed pairwise tree.
+pub(crate) unsafe fn dots_cols_portable(data: &[f64], n: usize, s: usize, e: usize, w: &[f64], part: &mut [f64]) {
+    const L: usize = 8;
+    let len = e - s;
+    let wv = w;
+    let body = len - len % L;
+    let k = part.len();
+    let tree = |a: [f64; L]| -> f64 {
+        ((a[0] + a[4]) + (a[1] + a[5])) + ((a[2] + a[6]) + (a[3] + a[7]))
+    };
+    let mut j = 0;
+    while j + 4 <= k {
+        let c0 = &data[j * n + s..j * n + e];
+        let c1 = &data[(j + 1) * n + s..(j + 1) * n + e];
+        let c2 = &data[(j + 2) * n + s..(j + 2) * n + e];
+        let c3 = &data[(j + 3) * n + s..(j + 3) * n + e];
+        let (mut a0, mut a1, mut a2, mut a3) = ([0.0f64; L], [0.0f64; L], [0.0f64; L], [0.0f64; L]);
+        // Fixed-size chunk references carry no bounds checks, which keeps the eight
+        // accumulators in vector registers on every target-cpu.
+        let it = wv[..body].chunks_exact(L)
+            .zip(c0[..body].chunks_exact(L))
+            .zip(c1[..body].chunks_exact(L))
+            .zip(c2[..body].chunks_exact(L))
+            .zip(c3[..body].chunks_exact(L));
+        for ((((w8, x0), x1), x2), x3) in it {
+            let w8: &[f64; L] = w8.try_into().unwrap();
+            let x0: &[f64; L] = x0.try_into().unwrap();
+            let x1: &[f64; L] = x1.try_into().unwrap();
+            let x2: &[f64; L] = x2.try_into().unwrap();
+            let x3: &[f64; L] = x3.try_into().unwrap();
+            for l in 0..L {
+                a0[l] += x0[l] * w8[l];
+                a1[l] += x1[l] * w8[l];
+                a2[l] += x2[l] * w8[l];
+                a3[l] += x3[l] * w8[l];
+            }
+        }
+        let (mut t0, mut t1, mut t2, mut t3) = (0.0, 0.0, 0.0, 0.0);
+        for i in body..len {
+            t0 += c0[i] * wv[i];
+            t1 += c1[i] * wv[i];
+            t2 += c2[i] * wv[i];
+            t3 += c3[i] * wv[i];
+        }
+        part[j] = tree(a0) + t0;
+        part[j + 1] = tree(a1) + t1;
+        part[j + 2] = tree(a2) + t2;
+        part[j + 3] = tree(a3) + t3;
+        j += 4;
+    }
+    while j < k {
+        let c = &data[j * n + s..j * n + e];
+        let mut a = [0.0f64; L];
+        let mut i = 0;
+        while i < body {
+            for l in 0..L {
+                a[l] += c[i + l] * wv[i + l];
+            }
+            i += L;
+        }
+        let mut t = 0.0;
+        for i in body..len {
+            t += c[i] * wv[i];
+        }
+        part[j] = tree(a) + t;
+        j += 1;
+    }
+}
+
+
 mod generic {
     use super::LANES;
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
     define_kernels!();
+
+    #[cfg(not(target_arch = "x86_64"))]
+    pub use super::dots_cols_portable as dots_cols;
+    #[cfg(target_arch = "x86_64")]
+    dots_cols_simd!(dots_cols, __m128d, 2, _mm_setzero_pd, _mm_loadu_pd, _mm_mul_pd, _mm_add_pd, _mm_storeu_pd);
 }
 
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
     use super::LANES;
+    use std::arch::x86_64::*;
     define_kernels!(#[target_feature(enable = "avx2")]);
+    dots_cols_simd!(#[target_feature(enable = "avx2")] dots_cols, __m256d, 4, _mm256_setzero_pd, _mm256_loadu_pd, _mm256_mul_pd, _mm256_add_pd, _mm256_storeu_pd);
 }
 
 #[cfg(target_arch = "x86_64")]
 mod avx512 {
     use super::LANES;
+    use std::arch::x86_64::*;
     define_kernels!(#[target_feature(enable = "avx512f")]);
+    dots_cols_simd!(#[target_feature(enable = "avx512f")] dots_cols, __m512d, 8, _mm512_setzero_pd, _mm512_loadu_pd, _mm512_mul_pd, _mm512_add_pd, _mm512_storeu_pd);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -321,7 +428,7 @@ pub fn cg_update(
 }
 
 pub fn dots_cols(data: &[f64], n: usize, s: usize, e: usize, w: &[f64], part: &mut [f64]) {
-    assert!(s <= e && e <= n && w.len() >= e && data.len() >= part.len() * n);
+    assert!(s <= e && e <= n && w.len() == e - s && data.len() >= part.len() * n);
     dispatch!(dots_cols(data, n, s, e, w, part))
 }
 
@@ -370,7 +477,7 @@ mod tests {
                     $m::add_cols(&cols, n, 0, 9, &h, &mut w[0..n]);
                     out.extend(&w);
                     let mut part = vec![0.0; 9];
-                    $m::dots_cols(&cols, n, 3, n - 3, &a, &mut part);
+                    $m::dots_cols(&cols, n, 3, n - 3, &a[3..n - 3], &mut part);
                     out.extend(&part);
                     out
                 })

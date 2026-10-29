@@ -1,10 +1,15 @@
 //! Column-major block of `n`-vectors with cache-blocked multi-vector kernels
 //! (the role of SLEPc's `BV` object and PETSc's `VecMDot` / `VecMAXPY`).
 //!
-//! All row loops are blocked in [`CHUNK`]-sized pieces so the vector being
+//! All row loops are blocked in [`BCHUNK`]-sized pieces so the vector being
 //! orthogonalised stays in L2 while every basis column streams through once.
 
-use crate::par::{self, CHUNK};
+use crate::par;
+
+/// Rows per block in the multi-vector kernels. Small enough that a block of every basis
+/// column (plus the vector being orthogonalised) stays in L2, so fused passes over the same
+/// rows re-read the basis from cache rather than memory.
+const BCHUNK: usize = 2048;
 use crate::kernels;
 use crate::vecops::dot_chunk;
 
@@ -130,13 +135,7 @@ impl Basis {
                 dst.copy_from_slice(&tile[jc * len..(jc + 1) * len]);
             }
         };
-        #[cfg(feature = "parallel")]
-        if par::parallel_enabled(n) {
-            use rayon::prelude::*;
-            (0..nblocks).into_par_iter().for_each(work);
-            return;
-        }
-        (0..nblocks).for_each(work);
+        par::static_items(nblocks, par::parallel_enabled(n), work);
     }
 }
 
@@ -157,18 +156,21 @@ impl BasisView<'_> {
     pub fn dots(&self, k: usize, w: &[f64], h: &mut [f64]) {
         let n = self.n;
         assert!((k * n) <= self.data.len() && w.len() == n && h.len() >= k);
-        let h = &mut h[..k];
-        h.fill(0.0);
-        par::fold_chunks_vec(n, CHUNK, h, |s, e, part| {
-            kernels::dots_cols(self.data, n, s, e, w, part);
+        let parts = par::chunk_slots(n, BCHUNK, k, |s, e, part| {
+            kernels::dots_cols(self.data, n, s, e, &w[s..e], part);
         });
+        fold_slots(&parts, k, &mut h[..k]);
     }
 
     /// `w ← w − V[:, :k] h` (`VecMAXPY` with negated coefficients).
     pub fn sub_combination(&self, k: usize, h: &[f64], w: &mut [f64]) {
         let n = self.n;
         assert!((k * n) <= self.data.len() && w.len() == n && h.len() >= k);
-        par::for_chunks_mut(w, CHUNK, |s, wc| kernels::sub_cols(self.data, n, s, k, h, wc));
+        let ws = par::SharedMut::new(w);
+        par::static_chunks(n, BCHUNK, |_, s, e| {
+            // SAFETY: chunk ranges are disjoint and `w` is otherwise untouched.
+            kernels::sub_cols(self.data, n, s, k, h, unsafe { ws.range(s, e) });
+        });
     }
 
     /// `w ← w − V[:, :k] h`, returning `‖w‖²` of the result, computed while each chunk of `w`
@@ -177,19 +179,59 @@ impl BasisView<'_> {
         let n = self.n;
         assert!((k * n) <= self.data.len() && w.len() == n && h.len() >= k);
         let ws = par::SharedMut::new(w);
-        par::sum_chunks(n, CHUNK, |s, e| {
+        let parts = par::chunk_slots(n, BCHUNK, 1, |s, e, slot| {
             // SAFETY: chunk ranges are disjoint and `w` is otherwise untouched.
             let wc = unsafe { ws.range(s, e) };
             kernels::sub_cols(self.data, n, s, k, h, wc);
-            dot_chunk(wc, wc)
-        })
+            slot[0] = dot_chunk(wc, wc);
+        });
+        parts.iter().sum()
+    }
+
+    /// `w ← w − V[:, :k] h`; returns `‖w‖²` of the result and stores `h2 = V[:, :k]ᵀ w` (of the
+    /// result) in `h2`. The second product is formed per row block right after the update, while
+    /// the block of `V` is still in L2, so it costs no extra pass over `V` in memory.
+    pub fn sub_combination_norm_sq_dots(&self, k: usize, h: &[f64], w: &mut [f64], h2: &mut [f64]) -> f64 {
+        let n = self.n;
+        assert!((k * n) <= self.data.len() && w.len() == n && h.len() >= k && h2.len() >= k);
+        let ws = par::SharedMut::new(w);
+        let parts = par::chunk_slots(n, BCHUNK, k + 1, |s, e, slot| {
+            // SAFETY: chunk ranges are disjoint and `w` is otherwise untouched.
+            let wc = unsafe { ws.range(s, e) };
+            kernels::sub_cols(self.data, n, s, k, h, wc);
+            slot[k] = dot_chunk(wc, wc);
+            kernels::dots_cols(self.data, n, s, e, wc, &mut slot[..k]);
+        });
+        let mut nsq = 0.0;
+        h2[..k].fill(0.0);
+        for slot in parts.chunks_exact(k + 1) {
+            for (o, p) in h2[..k].iter_mut().zip(slot) {
+                *o += p;
+            }
+            nsq += slot[k];
+        }
+        nsq
     }
 
     /// `y ← y + V[:, :k] c`.
     pub fn add_combination(&self, k: usize, c: &[f64], y: &mut [f64]) {
         let n = self.n;
         assert!((k * n) <= self.data.len() && y.len() == n && c.len() >= k);
-        par::for_chunks_mut(y, CHUNK, |s, yc| kernels::add_cols(self.data, n, s, k, c, yc));
+        let ys = par::SharedMut::new(y);
+        par::static_chunks(n, BCHUNK, |_, s, e| {
+            // SAFETY: chunk ranges are disjoint and `y` is otherwise untouched.
+            kernels::add_cols(self.data, n, s, k, c, unsafe { ys.range(s, e) });
+        });
+    }
+}
+
+/// Sums the `stride`-long per-chunk slots into `out`, in chunk order.
+fn fold_slots(slots: &[f64], stride: usize, out: &mut [f64]) {
+    out.fill(0.0);
+    for slot in slots.chunks_exact(stride) {
+        for (o, p) in out.iter_mut().zip(slot) {
+            *o += p;
+        }
     }
 }
 
@@ -238,7 +280,17 @@ mod tests {
         let mut w3 = w.clone();
         let nsq = b.sub_combination_norm_sq(k, &h, &mut w3);
         assert_eq!(w3, w2);
-        assert_eq!(nsq, crate::vecops::dot(&w3, &w3));
+        let reference = crate::vecops::dot(&w3, &w3);
+        assert!((nsq - reference).abs() <= 1e-12 * reference);
+        // Fused update + second product: same update, `h2 = Vᵀ w_new`.
+        let mut w4 = w.clone();
+        let mut h2 = vec![0.0; k];
+        let nsq4 = b.view().sub_combination_norm_sq_dots(k, &h, &mut w4, &mut h2);
+        assert_eq!(w4, w3);
+        assert_eq!(nsq4, nsq);
+        let mut h2_ref = vec![0.0; k];
+        b.dots(k, &w4, &mut h2_ref);
+        assert_eq!(h2, h2_ref);
         let mut y = w2.clone();
         b.add_combination(k, &h, &mut y);
         for i in (0..n).step_by(991) {

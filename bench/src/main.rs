@@ -127,8 +127,8 @@ fn fmt_f(v: f64) -> String {
     if v.is_finite() { format!("{v:.17e}") } else { "null".into() }
 }
 
-fn run_in_pool<T: Send>(threads: usize, f: impl FnOnce() -> T + Send) -> T {
-    rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(f)
+fn run_in_pool<T>(threads: usize, f: impl FnOnce() -> T) -> T {
+    rsolvers::par::with_threads(threads, f)
 }
 
 fn true_rel_residual(a: &CsrMatrix, x: &[f64], b: &[f64]) -> f64 {

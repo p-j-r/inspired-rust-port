@@ -213,11 +213,13 @@ fn orthogonalize(v: &mut Basis, j: usize, h: &mut [f64], h2: &mut [f64]) -> (f64
     let (head, w) = v.split_col(j + 1);
     let k = j + 1;
     head.dots(k, w, h);
-    let mut after = head.sub_combination_norm_sq(k, h, w).sqrt();
+    // The refinement product `Vᵀw` is formed in the same pass as the update; Lanczos vectors
+    // lose most of their norm in the first pass (so refinement is almost always needed), and
+    // when it is not, the product is simply discarded.
+    let mut after = head.sub_combination_norm_sq_dots(k, h, w, h2).sqrt();
     let sumsq: f64 = h[..k].iter().map(|x| x * x).sum();
     let before = (after * after + sumsq).sqrt();
     if after < std::f64::consts::FRAC_1_SQRT_2 * before {
-        head.dots(k, w, h2);
         after = head.sub_combination_norm_sq(k, h2, w).sqrt();
         for (a, b) in h[..k].iter_mut().zip(&h2[..k]) {
             *a += b;

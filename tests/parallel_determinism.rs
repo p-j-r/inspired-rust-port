@@ -8,8 +8,8 @@ use rsolvers::rng::random_vector;
 use rsolvers::sparse::*;
 use rsolvers::Identity;
 
-fn with_threads<T: Send>(n: usize, f: impl FnOnce() -> T + Send) -> T {
-    rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap().install(f)
+fn with_threads<T>(n: usize, f: impl FnOnce() -> T) -> T {
+    rsolvers::par::with_threads(n, f)
 }
 
 #[test]

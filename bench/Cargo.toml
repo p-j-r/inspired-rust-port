@@ -7,4 +7,3 @@ publish = false
 
 [dependencies]
 rsolvers = { path = "..", features = ["parallel"] }
-rayon = "1"
