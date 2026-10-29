@@ -19,7 +19,7 @@ int main(int argc, char **argv)
   PetscReal   tol = 1e-8, err, sre = 0, sim = 0;
   PetscInt    ncv_used, nev = 4, ncv = PETSC_DEFAULT, maxit = PETSC_DEFAULT, reps = 3, i, its, nconv, n, nnz, herm = 0, definite = 0;
   PetscBool   flg;
-  double     *times, t0;
+  double     *times, t0, cold = 0;
   EPSConvergedReason reason;
   PetscScalar kr, ki, target;
   PetscLogEvent evst, evlu, evch;
@@ -87,7 +87,9 @@ int main(int argc, char **argv)
   if (v0) PetscCall(EPSSetInitialSpace(eps, 1, &v0));
 
   PetscCall(PetscMalloc1(reps, &times));
-  PetscCall(EPSSolve(eps)); /* warm-up */
+  t0 = MPI_Wtime();
+  PetscCall(EPSSolve(eps)); /* warm-up = cold solve: includes setup and factorisation */
+  cold = MPI_Wtime() - t0;
   for (i = 0; i < reps; i++) {
     if (v0) PetscCall(EPSSetInitialSpace(eps, 1, &v0));
     PetscCallMPI(MPI_Barrier(PETSC_COMM_WORLD));
@@ -113,14 +115,14 @@ int main(int argc, char **argv)
 
   qsort(times, reps, sizeof(double), cmp_double);
   PetscCall(PetscPrintf(PETSC_COMM_WORLD,
-    "{\"impl\":\"slepc\",\"kind\":\"eps\",\"n\":%d,\"nnz\":%d,\"scalar\":\"%s\",\"mode\":\"%s\",\"nev\":%d,\"ncv\":%d,\"restarts\":%d,\"matvecs\":%d,\"nconv\":%d,\"reason\":\"%s\",\"total_min_s\":%.17e,\"eps_min_s\":%.17e,\"factor_s\":%.17e,\"values\":[",
+    "{\"impl\":\"slepc\",\"kind\":\"eps\",\"n\":%d,\"nnz\":%d,\"scalar\":\"%s\",\"mode\":\"%s\",\"nev\":%d,\"ncv\":%d,\"restarts\":%d,\"matvecs\":%d,\"nconv\":%d,\"reason\":\"%s\",\"cold_s\":%.17e,\"total_min_s\":%.17e,\"eps_min_s\":%.17e,\"factor_s\":%.17e,\"values\":[",
     (int)n, (int)nnz,
 #if defined(PETSC_USE_COMPLEX)
     "complex",
 #else
     "real",
 #endif
-    mode, (int)nev, (int)ncv_used, (int)its, (int)info.count, (int)nconv, EPSConvergedReasons[reason], times[0], times[0], infolu.time + infoch.time));
+    mode, (int)nev, (int)ncv_used, (int)its, (int)info.count, (int)nconv, EPSConvergedReasons[reason], cold, times[0], times[0], infolu.time + infoch.time));
   for (i = 0; i < PetscMin(nev, nconv); i++) {
     PetscCall(EPSGetEigenvalue(eps, i, &kr, &ki));
     PetscCall(PetscPrintf(PETSC_COMM_WORLD, "%s[%.17e,%.17e]", i ? "," : "", (double)PetscRealPart(kr), (double)PetscImaginaryPart(kr)));

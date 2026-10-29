@@ -1,4 +1,9 @@
-# inspired-rust-port (`rsolvers`)
+# inspired-rust-port (`rsolvers` and `femsolve`)
+
+> **Also in this repository: [`femsolve/`](femsolve/README.md)**, the staging crate for porting solvers into nyx `femcore`
+> (real and complex Krylov–Schur, shift-and-invert with symbolic reuse, Matrix Market export, a SLEPc comparison harness).
+> Status, findings and next steps: [`docs/STATUS.md`](docs/STATUS.md), [`docs/LEARNINGS.md`](docs/LEARNINGS.md),
+> [`docs/NYX_INTEGRATION.md`](docs/NYX_INTEGRATION.md). The rest of this file describes `rsolvers`, the earlier real-only port.
 
 A from-scratch Rust port of a representative slice of two well-known C libraries:
 

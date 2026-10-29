@@ -7,19 +7,22 @@
 //! only reassembles the values (`A − σB`, one pass over the non-zeros) and re-runs the numeric
 //! factorisation with the cached symbolic object.
 //!
-//! This file and `faer_glue.rs` are the only ones that use `faer`; they target faer 0.24.
-//! If nyx pins another version, the calls to adapt are `SymbolicLu::try_new`,
-//! `Lu::try_new_with_symbolic`, `SymbolicLlt::try_new`, `Llt::try_new_with_symbolic` and
-//! `solve_in_place_with_conj` — all of which exist since faer 0.19 with the same shape.
+//! This file and `faer_glue.rs` are the only ones that use `faer`; they target faer 0.24.4 and
+//! use its *low-level* sparse API (`sparse::linalg::{cholesky, lu}`), which takes the parallelism
+//! and the scratch memory per call. That is what lets solves run sequentially while
+//! factorisations use the shared pool (see [`ThreadPolicy`]). If nyx pins another version, the
+//! calls to adapt are `factorize_symbolic_{cholesky,lu}`, `factorize_numeric_{llt,lu}`,
+//! `LltRef::new` / `LuRef::new_unchecked` and `solve_in_place_with_conj`.
 
 use crate::csr::Csr;
-use crate::faer_glue::FaerScalar;
+use crate::faer_glue::{FaerScalar, clear_upper_vector_state};
 use crate::linop::LinearOperator;
 use crate::scalar::Scalar;
-use faer::linalg::solvers::SolveCore;
-use faer::sparse::linalg::solvers::{Llt, Lu, SymbolicLlt, SymbolicLu};
+use faer::dyn_stack::{MemBuffer, MemStack};
+use faer::sparse::linalg::cholesky::{LltRef, SymbolicCholesky, factorize_symbolic_cholesky};
+use faer::sparse::linalg::lu::{LuRef, NumericLu, SymbolicLu, factorize_symbolic_lu};
 use faer::sparse::{SparseColMatRef, SymbolicSparseColMatRef};
-use faer::{Conj, MatMut, Side};
+use faer::{Conj, MatMut, Par, Side};
 use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +67,46 @@ pub enum Used {
     None,
     Cholesky,
     Lu,
+}
+
+/// Thread policy for one phase of a sparse factorisation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Threads {
+    /// Whatever `faer::set_global_parallelism` says at the time of the call (nyx's shared pool).
+    Global,
+    Sequential,
+    Fixed(usize),
+}
+
+impl Threads {
+    fn par(self) -> Par {
+        match self {
+            Threads::Global => faer::get_global_parallelism(),
+            Threads::Sequential => Par::Seq,
+            Threads::Fixed(n) if n <= 1 => Par::Seq,
+            Threads::Fixed(n) => Par::rayon(n),
+        }
+    }
+}
+
+/// Parallelism of numeric factorisation and of the triangular solves.
+///
+/// The defaults are measured, not guessed: on faer 0.24.4 the *parallel* sparse Cholesky and LU
+/// solves with more than one right-hand side are pathologically slow (a fixed ~1.4 s per call
+/// for a 64 000-unknown 3-D problem whatever the block width, against 12 ms per vector
+/// sequentially at width 8) and a single-vector solve gains nothing from threads, so solves run
+/// sequentially; factorisations use the global (shared-pool) setting. See `docs/LEARNINGS.md`
+/// and `examples/solve_scaling.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThreadPolicy {
+    pub factor: Threads,
+    pub solve: Threads,
+}
+
+impl Default for ThreadPolicy {
+    fn default() -> Self {
+        Self { factor: Threads::Global, solve: Threads::Sequential }
+    }
 }
 
 /// Timings and counters of a [`ShiftedFactorization`] (seconds).
@@ -181,9 +224,12 @@ pub struct ShiftedFactorization<T: FaerScalar> {
     lower: Option<Assembled<T>>,
     vals: Vec<T>,
     sym_lu: Option<SymbolicLu<u32>>,
-    sym_llt: Option<SymbolicLlt<u32>>,
-    lu: Option<Lu<u32, T::Elem>>,
-    llt: Option<Llt<u32, T::Elem>>,
+    sym_llt: Option<SymbolicCholesky<u32>>,
+    lu_num: NumericLu<u32, T::Elem>,
+    llt_vals: Vec<T::Elem>,
+    have: Used,
+    /// Thread policy for factorisation and solves (see [`ThreadPolicy`]).
+    pub threads: ThreadPolicy,
     stats: FactorStats,
 }
 
@@ -204,8 +250,10 @@ impl<T: FaerScalar> ShiftedFactorization<T> {
             vals: vec![T::ZERO; nnz],
             sym_lu: None,
             sym_llt: None,
-            lu: None,
-            llt: None,
+            lu_num: NumericLu::new(),
+            llt_vals: Vec::new(),
+            have: Used::None,
+            threads: ThreadPolicy::default(),
             stats: FactorStats {
                 analyse_secs: t0.elapsed().as_secs_f64(),
                 symbolic_count: 0,
@@ -232,25 +280,43 @@ impl<T: FaerScalar> ShiftedFactorization<T> {
 
     fn try_cholesky(&mut self, sigma: T) -> Result<bool, SolverError> {
         let n = self.n;
+        let par = self.threads.factor.par();
         let lower = self.lower.as_ref().expect("lower pattern exists for PositiveDefinite");
         if self.sym_llt.is_none() {
             let t0 = Instant::now();
-            self.sym_llt =
-                Some(SymbolicLlt::try_new(Self::pattern(lower, n), Side::Lower).map_err(|_| SolverError::OutOfMemory)?);
+            let sym = factorize_symbolic_cholesky(
+                Self::pattern(lower, n),
+                Side::Lower,
+                Default::default(),
+                Default::default(),
+            )
+            .map_err(|_| SolverError::OutOfMemory)?;
+            self.llt_vals = vec![<T::Elem as faer::traits::ComplexField>::zero_impl(); sym.len_val()];
+            self.sym_llt = Some(sym);
             self.stats.analyse_secs += t0.elapsed().as_secs_f64();
             self.stats.symbolic_count += 1;
         }
         let mut vals = std::mem::take(&mut self.vals);
         Self::shifted_values(lower, sigma, &mut vals);
-        let t0 = Instant::now();
+        let sym = self.sym_llt.as_ref().unwrap();
         let mat = SparseColMatRef::new(Self::pattern(lower, n), T::faer_slice(&vals));
-        let res = Llt::try_new_with_symbolic(self.sym_llt.clone().unwrap(), mat, Side::Lower);
+        let t0 = Instant::now();
+        let mut mem = MemBuffer::new(sym.factorize_numeric_llt_scratch::<T::Elem>(par, Default::default()));
+        let res = sym.factorize_numeric_llt::<T::Elem>(
+            &mut self.llt_vals,
+            mat,
+            Side::Lower,
+            Default::default(),
+            par,
+            MemStack::new(&mut mem),
+            Default::default(),
+        );
+        clear_upper_vector_state();
         self.stats.numeric_secs_last = t0.elapsed().as_secs_f64();
         self.vals = vals;
         match res {
-            Ok(f) => {
-                self.llt = Some(f);
-                self.lu = None;
+            Ok(_) => {
+                self.have = Used::Cholesky;
                 self.stats.used = Used::Cholesky;
                 Ok(true)
             }
@@ -260,28 +326,39 @@ impl<T: FaerScalar> ShiftedFactorization<T> {
 
     fn do_lu(&mut self, sigma: T) -> Result<(), SolverError> {
         let n = self.n;
+        let par = self.threads.factor.par();
         if self.sym_lu.is_none() {
             let t0 = Instant::now();
-            self.sym_lu =
-                Some(SymbolicLu::try_new(Self::pattern(&self.full, n)).map_err(|_| SolverError::OutOfMemory)?);
+            self.sym_lu = Some(
+                factorize_symbolic_lu(Self::pattern(&self.full, n), Default::default())
+                    .map_err(|_| SolverError::OutOfMemory)?,
+            );
             self.stats.analyse_secs += t0.elapsed().as_secs_f64();
             self.stats.symbolic_count += 1;
         }
         let mut vals = std::mem::take(&mut self.vals);
         Self::shifted_values(&self.full, sigma, &mut vals);
-        let t0 = Instant::now();
+        let sym = self.sym_lu.as_ref().unwrap();
         let mat = SparseColMatRef::new(Self::pattern(&self.full, n), T::faer_slice(&vals));
-        let res = Lu::try_new_with_symbolic(self.sym_lu.clone().unwrap(), mat);
+        let t0 = Instant::now();
+        let mut mem = MemBuffer::new(sym.factorize_numeric_lu_scratch::<T::Elem>(par, Default::default()));
+        let res = sym.factorize_numeric_lu::<T::Elem>(
+            &mut self.lu_num,
+            mat,
+            par,
+            MemStack::new(&mut mem),
+            Default::default(),
+        );
+        let ok = res.is_ok();
+        clear_upper_vector_state();
         self.stats.numeric_secs_last = t0.elapsed().as_secs_f64();
         self.vals = vals;
-        match res {
-            Ok(f) => {
-                self.lu = Some(f);
-                self.llt = None;
-                self.stats.used = Used::Lu;
-                Ok(())
-            }
-            Err(_) => Err(SolverError::Singular),
+        if ok {
+            self.have = Used::Lu;
+            self.stats.used = Used::Lu;
+            Ok(())
+        } else {
+            Err(SolverError::Singular)
         }
     }
 }
@@ -316,12 +393,27 @@ impl<T: FaerScalar> ShiftedSolver<T> for ShiftedFactorization<T> {
     fn solve_block_in_place(&self, rhs: &mut [T], nrhs: usize) {
         let n = self.n;
         assert!(rhs.len() >= n * nrhs);
+        let par = self.threads.solve.par();
         let m = MatMut::from_column_major_slice_mut(T::faer_slice_mut(&mut rhs[..n * nrhs]), n, nrhs);
-        match (&self.llt, &self.lu) {
-            (Some(f), _) => f.solve_in_place_with_conj(Conj::No, m),
-            (None, Some(f)) => f.solve_in_place_with_conj(Conj::No, m),
-            (None, None) => panic!("set_shift must succeed before solving"),
+        match self.have {
+            Used::Cholesky => {
+                let sym = self.sym_llt.as_ref().unwrap();
+                let mut mem = MemBuffer::new(sym.solve_in_place_scratch::<T::Elem>(nrhs, par));
+                LltRef::new(sym, &self.llt_vals).solve_in_place_with_conj(Conj::No, m, par, MemStack::new(&mut mem));
+            }
+            Used::Lu => {
+                let sym = self.sym_lu.as_ref().unwrap();
+                let mut mem = MemBuffer::new(sym.solve_in_place_scratch::<T::Elem>(nrhs, par));
+                LuRef::new_unchecked(sym, &self.lu_num).solve_in_place_with_conj(
+                    Conj::No,
+                    m,
+                    par,
+                    MemStack::new(&mut mem),
+                );
+            }
+            Used::None => panic!("set_shift must succeed before solving"),
         }
+        clear_upper_vector_state();
     }
 
     fn stats(&self) -> FactorStats {

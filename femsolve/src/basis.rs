@@ -110,9 +110,7 @@ impl<T: Scalar> Basis<T> {
                 }
             }
             let mut out = vec![T::ZERO; len * ncols_q];
-            for c in 0..ncols_q {
-                T::k_add_cols(&src, len, 0, &q[c * ldq..c * ldq + nrows_q], &mut out[c * len..(c + 1) * len]);
-            }
+            T::k_tile_mult(&src, len, nrows_q, q, ldq, ncols_q, &mut out);
             for c in 0..ncols_q {
                 // SAFETY: as above.
                 unsafe {

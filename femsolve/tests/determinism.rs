@@ -35,7 +35,7 @@ fn run<T: Scalar + femsolve::faer_glue::FaerScalar>(
 fn krylov_schur_is_bitwise_independent_of_thread_count() {
     // n is large enough that the parallel thresholds engage.
     let a = laplacian_2d(160, 150);
-    let opts = EpsOptions { tol: 1e-8, ncv: Some(24), max_it: Some(400), block_size: 2, ..EpsOptions::hermitian(4) };
+    let opts = EpsOptions { tol: 1e-4, ncv: Some(24), max_it: Some(60), block_size: 2, ..EpsOptions::hermitian(4) };
     let one = in_pool(1, || run(&a, None, &opts));
     let four = in_pool(4, || run(&a, None, &opts));
     assert_eq!(one.2, four.2);

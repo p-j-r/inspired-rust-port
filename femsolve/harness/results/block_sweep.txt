@@ -1,0 +1,12 @@
+# Block-size sweep (fs-eps, Krylov-Schur, shift-and-invert), 4 vCPU VM, faer solves sequential.
+# lap3d_40: real SPD 64 000 unknowns, Cholesky, sigma = -0.1, nev 6, ncv 32 for every block size.
+# pml2d_200x200: complex symmetric pencil with absorbing layer, 40 000 unknowns, LU, sigma = 1.0137, nev 6, ncv 40.
+# The run for block 8 on pml2d was stopped (it needs more than 100 restarts); the trend is clear from 1, 2 and 4.
+# total = whole solve including the numeric factorisation; one repetition on pml2d, two on lap3d (minimum).
+lap3d_40         ncv 32 block 1: restarts   5 matvecs   90  total 6.317s (factor 1.058, operator 4.809, orth 0.398)  nconv 6 resid 6.5e-08
+lap3d_40         ncv 32 block 2: restarts   4 matvecs   78  total 3.797s (factor 0.976, operator 2.513, orth 0.258)  nconv 9 resid 1.7e-08
+lap3d_40         ncv 32 block 4: restarts   7 matvecs  120  total 3.698s (factor 1.035, operator 2.234, orth 0.360)  nconv 7 resid 2.3e-07
+lap3d_40         ncv 32 block 8: restarts  13 matvecs  208  total 4.368s (factor 1.075, operator 2.499, orth 0.656)  nconv 6 resid 1.3e-06
+pml2d_200x200    ncv 40 block 1: restarts  21 matvecs  440  total 12.567s (factor 0.229, operator 7.739, orth 3.935)  nconv 8 resid 8.2e-09
+pml2d_200x200    ncv 40 block 2: restarts  74 matvecs 1496  total 32.805s (factor 0.242, operator 17.506, orth 12.380)  nconv 10 resid 3.6e-09
+pml2d_200x200    ncv 40 block 4: restarts 127 matvecs 2544  total 42.663s (factor 0.263, operator 18.571, orth 19.472)  nconv 6 resid 4.0e-09

@@ -29,6 +29,32 @@ pub trait Kernels: Sized + Copy {
     fn k_sub_cols(data: &[Self], n: usize, s: usize, h: &[Self], w: &mut [Self]);
     /// `y[i] += Σⱼ data[j·n + s + i]·c[j]`, `j < c.len()`.
     fn k_add_cols(data: &[Self], n: usize, s: usize, c: &[Self], y: &mut [Self]);
+    /// `out[:, c] = src · q[:, c]` for `c < ncols`: a small matrix product on one row tile.
+    /// `src` is `len × nrows` and `out` is `len × ncols`, both contiguous column-major; `q` is
+    /// `nrows × ncols` with leading dimension `ldq`. This is the restart multiply `V ← V·Q`
+    /// (a GEMM), so the real and complex types use `faer`'s matrix product unless the
+    /// `portable-kernels` feature is on (see [`crate::faer_glue`]). The portable form is the
+    /// definition; the GEMM may differ in the last bits (FMA, blocking) but, being applied per
+    /// fixed row tile on one thread, never depends on the thread count.
+    fn k_tile_mult(src: &[Self], len: usize, nrows: usize, q: &[Self], ldq: usize, ncols: usize, out: &mut [Self]);
+}
+
+#[cfg_attr(not(any(test, feature = "portable-kernels")), allow(dead_code))]
+#[inline(always)]
+fn tile_mult_portable<T: Scalar>(
+    src: &[T],
+    len: usize,
+    nrows: usize,
+    q: &[T],
+    ldq: usize,
+    ncols: usize,
+    out: &mut [T],
+) {
+    for c in 0..ncols {
+        let o = &mut out[c * len..(c + 1) * len];
+        o.fill(T::ZERO);
+        combine_generic(src, len, 0, &q[c * ldq..c * ldq + nrows], o, 1.0);
+    }
 }
 
 #[inline(always)]
@@ -122,6 +148,25 @@ macro_rules! impl_kernels {
             fn k_add_cols(data: &[Self], n: usize, s: usize, c: &[Self], y: &mut [Self]) {
                 combine_generic(data, n, s, c, y, 1.0)
             }
+            #[inline]
+            fn k_tile_mult(
+                src: &[Self],
+                len: usize,
+                nrows: usize,
+                q: &[Self],
+                ldq: usize,
+                ncols: usize,
+                out: &mut [Self],
+            ) {
+                #[cfg(not(feature = "portable-kernels"))]
+                {
+                    crate::faer_glue::tile_mult(src, len, nrows, q, ldq, ncols, out)
+                }
+                #[cfg(feature = "portable-kernels")]
+                {
+                    tile_mult_portable(src, len, nrows, q, ldq, ncols, out)
+                }
+            }
         }
     };
 }
@@ -169,6 +214,30 @@ mod tests {
                 assert!((add[i] - (w[i] + comb)).modulus() < 1e-12);
             }
         }
+    }
+
+    fn check_tile_mult<T: Scalar>() {
+        let (len, nrows, ncols, ldq) = (37usize, 13usize, 6usize, 15usize);
+        let src = rv::<T>(len * nrows, 7);
+        let q = rv::<T>(ldq * ncols, 8);
+        let (mut got, mut want) = (vec![T::ZERO; len * ncols], vec![T::ZERO; len * ncols]);
+        T::k_tile_mult(&src, len, nrows, &q, ldq, ncols, &mut got);
+        tile_mult_portable(&src, len, nrows, &q, ldq, ncols, &mut want);
+        for (g, w) in got.iter().zip(&want) {
+            assert!((*g - *w).modulus() < 1e-12);
+        }
+        for c in 0..ncols {
+            for i in 0..len {
+                let naive = (0..nrows).fold(T::ZERO, |a, j| a + src[j * len + i] * q[c * ldq + j]);
+                assert!((got[c * len + i] - naive).modulus() < 1e-12);
+            }
+        }
+    }
+
+    #[test]
+    fn tile_mult_matches_definition() {
+        check_tile_mult::<f64>();
+        check_tile_mult::<C64>();
     }
 
     #[test]

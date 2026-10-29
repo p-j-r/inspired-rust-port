@@ -82,3 +82,22 @@ Source: <https://gitlab.com/slepc/slepc/-/blob/main/LICENSE.md> (BSD-2-Clause)
     (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
     SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
     
+
+## `femsolve`
+
+`femsolve/` follows the same practice: ideas, defaults and observable behaviour were taken from
+SLEPc 3.19.2 after reading `src/eps/impls/krylov/krylovschur/krylovschur.c`,
+`src/eps/impls/krylov/epskrylov.c` (`EPSKrylovConvergence`), `src/eps/interface/epssolve.c`
+(`EPSGetStartVector`), `src/eps/interface/epsdefault.c` (`EPSConvergedRelative`, purification),
+`src/eps/interface/epssetup.c` (`EPSSetUpSort_Default`), `src/sys/classes/bv/interface/bvkrylov.c` and
+`src/sys/classes/ds/impls/nhep/dsnhep.c`, to reproduce its restart, locking, start-vector and
+convergence rules so iteration counts can be compared one to one. No code was copied; the
+BSD-2-Clause notice for SLEPc and PETSc above applies to that derived behaviour.
+
+Dependencies added by `femsolve`: `faer` 0.24.4 (MIT; it bundles notices for Eigen (MPL-2.0),
+LAPACK (BSD), AMD and COLAMD (BSD) in its own `COPYING.*` files), `num-complex` (MIT/Apache-2.0),
+optional `rayon` (MIT/Apache-2.0). The harness (`femsolve/harness`) links against the system PETSc/SLEPc
+(BSD-2-Clause) and is not part of the library.
+
+Not yet checked: the licences of other references named in the port list (hypre, MUMPS, PRIMME,
+BLOPEX, ChASE) — confirm each, and nyx's own licence, before reading code to port for them.

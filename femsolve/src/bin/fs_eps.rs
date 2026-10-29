@@ -11,11 +11,12 @@
 //!   --block b [1]   --keep f [0.5]   --reps r [3]   --definite (try Cholesky first)
 //!   --conv theta|original   convergence test: SLEPc's ‖r‖/|θ| [theta, for parity] or the relative
 //!                           residual of the original problem [original]
+//!   --factor-threads global|seq|<n> [global]   --solve-threads global|seq|<n> [seq]
 //!   --history (log the error estimates of every restart)
 
 use femsolve::C64;
 use femsolve::bundle::{Bundle, read_meta};
-use femsolve::direct::Definiteness;
+use femsolve::direct::{Definiteness, ThreadPolicy, Threads};
 use femsolve::eps::{EpsOptions, EpsReason, Which, krylov_schur};
 use femsolve::faer_glue::FaerScalar;
 use femsolve::problem::{EigenProblem, KrylovSchurShiftInvert, ShiftInvertEigenSolver, Symmetry};
@@ -115,15 +116,29 @@ fn run<T: FaerScalar>(args: &Args) {
     let scalar = if T::IS_COMPLEX { "complex" } else { "real" };
 
     let (values, resid, restarts, matvecs, nconv, reason, total_min, eps_min, factor_s, extra, ncv_used);
+    let mut cold_s = 0.0;
     if mode == "shift" {
         let problem = EigenProblem { a: bun.a.clone(), b: bun.b.clone(), symmetry };
         let def = if args.flag("definite") { Definiteness::PositiveDefinite } else { Definiteness::General };
         let mut s = KrylovSchurShiftInvert::new(&problem, def).expect("setup");
         s.opts = EpsOptions { which: Which::LargestMagnitude, ..opts.clone() };
         s.start = bun.v0.clone();
+        let parse_threads = |k: &str, default: Threads| match args.kv.get(k).map(String::as_str) {
+            None => default,
+            Some("global") => Threads::Global,
+            Some("seq") => Threads::Sequential,
+            Some(n) => Threads::Fixed(n.parse().expect("--factor-threads / --solve-threads: global|seq|<n>")),
+        };
+        let dflt = ThreadPolicy::default();
+        s.set_thread_policy(ThreadPolicy {
+            factor: parse_threads("factor-threads", dflt.factor),
+            solve: parse_threads("solve-threads", dflt.solve),
+        });
         s.theta_convergence = args.kv.get("conv").map(String::as_str) != Some("original");
         let sigma = T::from_parts(sre, sim);
+        let t_cold = Instant::now();
         let first = s.solve_near(sigma, nev).expect("solve"); // warm-up (includes the symbolic analysis)
+        cold_s = t_cold.elapsed().as_secs_f64() + s.factor_stats().analyse_secs * 0.0;
         let (mut best_total, mut best_eps, mut best_fac) = (f64::MAX, f64::MAX, f64::MAX);
         let mut last = first;
         for _ in 0..reps {
@@ -149,11 +164,13 @@ fn run<T: FaerScalar>(args: &Args) {
         let st = last.factor_stats;
         let hist = history_json(&last.history);
         extra = format!(
-            "{hist},\"factor\":\"{:?}\",\"symbolic_s\":{:.6e},\"symbolic_count\":{},\"breakdowns\":{},\"t_operator\":{:.6e},\"t_weight\":{:.6e},\"t_orth\":{:.6e},\"t_dense\":{:.6e},\"t_restart\":{:.6e}",
+            "{hist},\"factor\":\"{:?}\",\"symbolic_s\":{:.6e},\"symbolic_count\":{},\"breakdowns\":{},\"orth_calls\":{},\"orth_refinements\":{},\"t_operator\":{:.6e},\"t_weight\":{:.6e},\"t_orth\":{:.6e},\"t_dense\":{:.6e},\"t_restart\":{:.6e}",
             st.used,
             st.analyse_secs,
             st.symbolic_count,
             last.breakdowns,
+            last.orth_calls,
+            last.orth_refinements,
             last.eps_timings.operator,
             last.eps_timings.weight,
             last.eps_timings.orthogonalize,
@@ -209,7 +226,7 @@ fn run<T: FaerScalar>(args: &Args) {
         );
     }
     println!(
-        "{{\"impl\":\"femsolve\",\"kind\":\"eps\",\"n\":{n},\"nnz\":{nnz},\"scalar\":\"{scalar}\",\"mode\":\"{mode}\",\"nev\":{nev},\"ncv\":{ncv_used},\"block\":{},\"tol\":{:e},\"restarts\":{restarts},\"matvecs\":{matvecs},\"nconv\":{nconv},\"reason\":\"{:?}\",\"total_min_s\":{total_min:.6e},\"eps_min_s\":{eps_min:.6e},\"factor_s\":{factor_s:.6e},\"values\":[{}],\"true_rel_resid\":[{}]{extra}}}",
+        "{{\"impl\":\"femsolve\",\"kind\":\"eps\",\"n\":{n},\"nnz\":{nnz},\"scalar\":\"{scalar}\",\"mode\":\"{mode}\",\"nev\":{nev},\"ncv\":{ncv_used},\"block\":{},\"tol\":{:e},\"restarts\":{restarts},\"matvecs\":{matvecs},\"nconv\":{nconv},\"reason\":\"{:?}\",\"cold_s\":{cold_s:.6e},\"total_min_s\":{total_min:.6e},\"eps_min_s\":{eps_min:.6e},\"factor_s\":{factor_s:.6e},\"values\":[{}],\"true_rel_resid\":[{}]{extra}}}",
         opts.block_size,
         opts.tol,
         reason,

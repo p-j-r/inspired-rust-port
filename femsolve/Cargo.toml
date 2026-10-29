@@ -19,6 +19,10 @@ default = []
 # Chunk-parallel vector and basis kernels on rayon. Results stay bit-identical to the serial
 # build because chunk boundaries and the fold order are fixed (see `par.rs`).
 parallel = ["dep:rayon"]
+# Use only the portable (written-here) kernels. The default routes the restart multiply
+# V <- V*Q through faer GEMM, which is much faster but picks FMA/blocking by CPU, so its last
+# bits can differ between machines (never between thread counts).
+portable-kernels = []
 
 [dev-dependencies]
 proptest = "1"

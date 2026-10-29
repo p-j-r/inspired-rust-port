@@ -3,6 +3,7 @@
 
   python3 harness/run.py run    --suite quick --out harness/results/quick.jsonl
   python3 harness/run.py report harness/results/quick.jsonl
+  python3 harness/run.py rejudge harness/results/quick.jsonl   # recompute verdicts after changing the rules
 
 Setup (Ubuntu 24.04):
   apt install libpetsc-real-dev libslepc-real-dev libpetsc-complex-dev libslepc-complex-dev libopenmpi-dev pkg-config
@@ -51,8 +52,10 @@ SUITES["full"] = SUITES["quick"] + [
     case("fe1d n=20000", "fe1d:20000", "real", 1, sigma=(0.5, 0), nev=8, reps=5),
     case("gauge1d n=20000", "gauge1d:20000:0.7", "complex", 1, sigma=(0.513, 0), nev=8, reps=5),
     case("pml1d n=20000", "pml1d:20000:0.3", "complex", 0, sigma=(0.5133, 0.3001), nev=8, reps=5),
-    case("pml2d 200x200", "pml2d:200:200:3.0", "complex", 0, sigma=(1.0137, 0.0), nev=6, reps=3),
-    case("lap3d 40 Cholesky", "lap3d:40", "real", 1, sigma=(-0.1, 0), nev=6, definite=1, reps=3),
+    # ~100 restarts of a slowly converging non-Hermitian run: rounding differences between the two LU factorisations are amplified, so only tier B is meaningful
+    case("pml2d 200x200", "pml2d:200:200:3.0", "complex", 0, tier="B", sigma=(1.0137, 0.0), nev=6, reps=3),
+    # a cube: the spectrum is degenerate, so only tier B is meaningful
+    case("lap3d 40 Cholesky", "lap3d:40", "real", 1, tier="B", sigma=(-0.1, 0), nev=6, definite=1, reps=3),
 ]
 
 def ensure_bundle(spec):
@@ -111,12 +114,21 @@ def judge(r):
         ok = same_counts and dv < 1e-10 and res < res_limit
         why = "restarts %d/%d matvecs %d/%d max|dλ|/|λ|=%.1e max resid=%.1e" % (a["restarts"], b["restarts"], a["matvecs"], b["matvecs"], dv, res)
     else:
-        # tier B: compare as sets (sorted by value), allow different counts
-        key = lambda v: (round(v[0], 6), round(v[1], 6))
-        va, vb = sorted(a["values"][:nev], key=key), sorted(b["values"][:nev], key=key)
-        dv = max((rel_diff(x, y) for x, y in zip(va, vb)), default=float("nan"))
-        ok = dv < 1e-8 and res < res_limit
-        why = "restarts %d/%d matvecs %d/%d max|dλ|/|λ|=%.1e max resid=%.1e" % (a["restarts"], b["restarts"], a["matvecs"], b["matvecs"], dv, res)
+        # Tier B: degenerate spectra (or runs so long that rounding is amplified). Compare the
+        # *distinct* eigenvalues: each solver returns some copies of a degenerate value, not
+        # necessarily the same number, so lists are reduced to distinct values (relative gap
+        # 1e-7) and compared over the length both cover.
+        def distinct(vs):
+            out = []
+            for v in sorted(vs, key=lambda z: (round(z[0], 12), round(z[1], 12))):
+                if not out or abs(complex(*v) - complex(*out[-1])) > 1e-7 * max(abs(complex(*v)), 1e-300):
+                    out.append(v)
+            return out
+        va, vb = distinct(a["values"][:nev]), distinct(b["values"][:nev])
+        m = min(len(va), len(vb))
+        dv = max((rel_diff(x, y) for x, y in zip(va[:m], vb[:m])), default=float("nan"))
+        ok = m > 0 and dv < 1e-8 and res < res_limit
+        why = "restarts %d/%d matvecs %d/%d distinct values %d/%d max|dλ|/|λ|=%.1e max resid=%.1e" % (a["restarts"], b["restarts"], a["matvecs"], b["matvecs"], len(va), len(vb), dv, res)
     return ("PASS" if ok else "FAIL"), why
 
 def cmd_run(args):
@@ -132,10 +144,19 @@ def cmd_run(args):
             f.flush()
             print("%-4s %-34s %s" % (r["verdict"], c["name"], r["detail"]), flush=True)
 
+def cmd_rejudge(args):
+    rows = [json.loads(l) for l in open(args.file)]
+    for r in rows:
+        r["verdict"], r["detail"] = judge(r)
+        print("%-4s %-34s %s" % (r["verdict"], r["case"], r["detail"]))
+    with open(args.file, "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+
 def cmd_report(args):
     rows = [json.loads(l) for l in open(args.file)]
-    print("| case | tier | verdict | restarts (rust/slepc) | matvecs | time rust [s] | time slepc [s] | ratio | max resid |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("| case | tier | verdict | restarts (rust/slepc) | matvecs | cold rust [s] | cold slepc [s] | warm rust [s] | warm slepc [s] | warm ratio | max resid |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rows:
         a, b = r["rust"], r["slepc"]
         if "error" in a or "error" in b:
@@ -143,14 +164,20 @@ def cmd_report(args):
             continue
         ta, tb = a["total_min_s"], b["total_min_s"]
         res = max(a["true_rel_resid"] + b["true_rel_resid"] + [0])
-        print("| %s | %s | %s | %d / %d | %d / %d | %.4g | %.4g | %.2f | %.1e |" % (
-            r["case"], r["tier"], r["verdict"], a["restarts"], b["restarts"], a["matvecs"], b["matvecs"], ta, tb, ta / tb if tb else float("nan"), res))
+        print("| %s | %s | %s | %d / %d | %d / %d | %.4g | %.4g | %.4g | %.4g | %.2f | %.1e |" % (
+            r["case"], r["tier"], r["verdict"], a["restarts"], b["restarts"], a["matvecs"], b["matvecs"],
+            a.get("cold_s", float("nan")), b.get("cold_s", float("nan")), ta, tb, ta / tb if tb else float("nan"), res))
     print()
-    print("ratio = rust / slepc (below 1: rust faster); both include the numeric factorisation for shift-and-invert cases is NOT guaranteed (see docs/STATUS.md, 'Timing caveats').")
+    print("cold = first solve (setup + symbolic + numeric factorisation + eigensolve); warm = minimum of the repeated solves.")
+    print("For rust, a warm solve re-does the numeric factorisation (set_shift) but not the symbolic analysis; for SLEPc the")
+    print("repeated EPSSolve reuses the PC factorisation (the logged factorisation time of a warm solve is 0), so warm slepc")
+    print("excludes the factorisation. Compare cold with cold for an all-in number; warm rust includes factor_s, see the JSON.")
+    print("ratio = rust / slepc (below 1: rust faster).")
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run"); r.add_argument("--suite", default="quick", choices=sorted(SUITES)); r.add_argument("--out", required=True); r.set_defaults(fn=cmd_run)
     p = sub.add_parser("report"); p.add_argument("file"); p.set_defaults(fn=cmd_report)
+    j = sub.add_parser("rejudge", help="recompute the verdicts of a stored result file"); j.add_argument("file"); j.set_defaults(fn=cmd_rejudge)
     args = ap.parse_args(); args.fn(args)

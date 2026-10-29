@@ -79,6 +79,9 @@ pub struct EigenPairs<T: Scalar> {
     pub restarts: usize,
     pub matvecs: usize,
     pub breakdowns: usize,
+    /// Orthogonalisation calls and how many needed the DGKS refinement pass.
+    pub orth_calls: usize,
+    pub orth_refinements: usize,
     pub eps_timings: Timings,
     pub factor_stats: FactorStats,
     /// Per-cycle convergence log (empty unless `opts.record_history` is set).
@@ -134,6 +137,12 @@ impl<'p, T: FaerScalar> KrylovSchurShiftInvert<'p, T> {
     pub fn factor_stats(&self) -> FactorStats {
         self.solver.stats()
     }
+
+    /// Thread policy of the factorisation and the triangular solves (see
+    /// [`crate::direct::ThreadPolicy`] for the defaults and why).
+    pub fn set_thread_policy(&mut self, policy: crate::direct::ThreadPolicy) {
+        self.solver.threads = policy;
+    }
 }
 
 impl<T: FaerScalar> ShiftInvertEigenSolver<T> for KrylovSchurShiftInvert<'_, T> {
@@ -181,6 +190,8 @@ impl<T: FaerScalar> ShiftInvertEigenSolver<T> for KrylovSchurShiftInvert<'_, T> 
             restarts: res.iterations,
             matvecs: res.matvecs,
             breakdowns: res.breakdowns,
+            orth_calls: res.orth_calls,
+            orth_refinements: res.orth_refinements,
             eps_timings: res.timings,
             factor_stats: self.solver.stats(),
             history: res.history,

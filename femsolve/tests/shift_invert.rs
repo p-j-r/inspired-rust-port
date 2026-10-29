@@ -207,3 +207,67 @@ fn original_problem_convergence_gives_tight_relative_residuals_for_small_eigenva
     assert!(worst_loose > 10.0 * worst_tight, "loose {worst_loose:e} tight {worst_tight:e}");
     assert!(loose.restarts <= tight.restarts);
 }
+
+#[test]
+fn thread_policy_changes_speed_not_results() {
+    use femsolve::direct::{ThreadPolicy, Threads};
+    let n = 3000;
+    let p = EigenProblem { a: laplacian_1d(n), b: Some(mass_1d(n, 1.0)), symmetry: Symmetry::Hermitian };
+    let mut s = KrylovSchurShiftInvert::new(&p, Definiteness::PositiveDefinite).unwrap();
+    s.opts.tol = 1e-12;
+    s.opts.block_size = 3; // several right-hand sides per solve exercise the multi-RHS path
+    let mut results = Vec::new();
+    for solve in [Threads::Sequential, Threads::Global, Threads::Fixed(2)] {
+        s.set_thread_policy(ThreadPolicy { factor: Threads::Global, solve });
+        let r = s.solve_near(-1e-3, 4).unwrap();
+        assert!(r.converged && r.residuals.iter().take(4).all(|&x| x < 1e-8));
+        results.push(r.values.iter().take(4).map(|v| v.re).collect::<Vec<_>>());
+    }
+    for r in &results[1..] {
+        for (a, b) in r.iter().zip(&results[0]) {
+            assert!((a - b).abs() < 1e-11 * b.abs().max(1e-3), "{a} vs {b}");
+        }
+    }
+}
+
+/// The port list's E1 acceptance test is "24 modes to 1e-9 with a basis of about 60"; nyx's own
+/// matrices are not available here, so the same shape of problem with exact spectra stands in:
+/// 24 eigenvalues of a generalised real problem and of a complex-symmetric one, ncv = 60.
+#[test]
+fn twenty_four_modes_with_a_basis_of_sixty() {
+    let n = 3000;
+    let exact = fe_spectrum(n);
+    let p = EigenProblem { a: laplacian_1d(n), b: Some(mass_1d(n, 1.0)), symmetry: Symmetry::Hermitian };
+    let mut s = KrylovSchurShiftInvert::new(&p, Definiteness::PositiveDefinite).unwrap();
+    s.opts.tol = 1e-11;
+    s.opts.ncv = Some(60);
+    let sigma = -1e-5;
+    let r = s.solve_near(sigma, 24).unwrap();
+    assert!(r.converged && r.values.len() >= 24);
+    assert!(r.ncv == 60);
+    for i in 0..24 {
+        let rel = (r.values[i].re - exact[i]).abs() / exact[i];
+        assert!(rel < 1e-9, "mode {i}: {} vs {} (rel {rel:e})", r.values[i].re, exact[i]);
+    }
+    assert!(
+        r.residuals.iter().take(24).all(|&x| x < 1e-9),
+        "{:?}",
+        r.residuals.iter().take(24).cloned().fold(0.0, f64::max)
+    );
+
+    // Complex symmetric: A = L + iγI, 24 modes around a complex shift. Exact: λ_k(L) + iγ.
+    let (n, gamma) = (3000usize, 0.2);
+    let a = Csr::axpby(C64::ONE, &laplacian_1d(n).to_complex(), C64::new(0.0, gamma), &Csr::identity(n));
+    let p = EigenProblem { a, b: None, symmetry: Symmetry::General };
+    let exact = laplacian_1d_eigenvalues(n);
+    let mut s = KrylovSchurShiftInvert::new(&p, Definiteness::General).unwrap();
+    s.opts.tol = 1e-11;
+    s.opts.ncv = Some(60);
+    let sigma = C64::new(0.0, gamma - 1e-4);
+    let r = s.solve_near(sigma, 24).unwrap();
+    assert!(r.converged && r.values.len() >= 24);
+    for i in 0..24 {
+        let rel = (r.values[i] - C64::new(exact[i], gamma)).norm() / r.values[i].norm();
+        assert!(rel < 1e-9, "complex mode {i}: {} vs {}", r.values[i], exact[i]);
+    }
+}
