@@ -65,7 +65,20 @@ int main(int argc, char **argv)
   PetscCall(KSPSetTolerances(ksp, rtol, 1e-50, 1e4, maxit));
   PetscCall(KSPSetInitialGuessNonzero(ksp, PETSC_FALSE));
   PetscCall(KSPGetPC(ksp, &pc));
-  PetscCall(PCSetType(pc, !strcmp(pcn, "jacobi") ? PCJACOBI : !strcmp(pcn, "amg") ? PCGAMG : !strcmp(pcn, "ilu") ? PCILU : !strcmp(pcn, "icc") ? PCICC : PCNONE));
+  PetscCall(PCSetType(pc, !strcmp(pcn, "jacobi") ? PCJACOBI : !strcmp(pcn, "amg") ? PCGAMG : !strcmp(pcn, "ilu") ? PCILU : !strcmp(pcn, "icc") ? PCICC : !strcmp(pcn, "asm") ? PCASM : PCNONE));
+  if (!strcmp(pcn, "asm")) {
+    PetscInt  blocks = 4, overlap = 1;
+    char      atype[16] = "restrict";
+    PetscCall(PetscOptionsGetInt(NULL, NULL, "-blocks", &blocks, NULL));
+    PetscCall(PetscOptionsGetInt(NULL, NULL, "-overlap", &overlap, NULL));
+    PetscCall(PetscOptionsGetString(NULL, NULL, "-asm-type", atype, sizeof(atype), NULL));
+    PetscCall(PCASMSetTotalSubdomains(pc, blocks, NULL, NULL));
+    PetscCall(PCASMSetOverlap(pc, overlap));
+    PetscCall(PCASMSetType(pc, !strcmp(atype, "basic") ? PC_ASM_BASIC : PC_ASM_RESTRICT));
+    PetscCall(PetscOptionsSetValue(NULL, "-sub_pc_type", "lu"));
+    PetscCall(PetscOptionsSetValue(NULL, "-sub_ksp_type", "preonly"));
+    PetscCall(PCSetFromOptions(pc));
+  }
   if (!strcmp(pcn, "ilu") || !strcmp(pcn, "icc")) {
     PetscInt levels = 0;
     PetscCall(PetscOptionsGetInt(NULL, NULL, "-levels", &levels, NULL));

@@ -29,6 +29,7 @@ pub mod pc;
 pub mod problem;
 pub mod rng;
 pub mod scalar;
+pub mod schwarz;
 pub mod snes;
 pub mod sweep;
 pub mod toar;

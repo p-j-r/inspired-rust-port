@@ -298,3 +298,14 @@ With `--features parallel` the same kernels reach 20–40 GB/s effective on 4 vC
 * Incomplete Cholesky breaks down on matrices that are SPD but not an H-matrix (a banded matrix with 0.7 off-diagonals): the diagonal
   shift `A + α diag(A)`, `α = 1e-3·2^j`, restores a usable factor; the shift is reported so callers can see it happened.
 * `Scalar` gained `sqrt_principal` for the complex-symmetric `LLᵀ` factorisation.
+
+## 20. Schwarz preconditioners (P4)  (measured)
+
+* PETSc's sequential `PCASM` with `-pc_asm_blocks N` uses contiguous index ranges, overlap by graph layers and (with `-sub_pc_type lu`) exact local solves: that
+  reproduces its iteration counts exactly (43/34 for CG, 12/16 for GMRES+RAS), so it is a tier-A reference; the type must be set explicitly (`-pc_asm_type basic` for CG).
+* **The Nicolaides coarse space must be smooth.** Indicator functions of the non-overlapping parts gave 28/41/54 iterations (4/16/64
+  subdomains), no better than one level (24/39/63). A graph-distance partition of unity on the overlapping subdomains gave 27/37/39. Both are far from
+  the theoretical subdomain-independent bound because the overlap is small (2 layers) and the problem is tiny (64² unknowns); expect better behaviour with
+  generous overlap or a larger problem.
+* RAS needed fewer GMRES iterations than ASM (21 vs 26) on convection–diffusion, and more overlap helped RAS (13 with 3 layers), as in the literature.
+* Subdomain solves are embarrassingly parallel and summed in subdomain order, so scoped threads give bit-identical results for any worker count.

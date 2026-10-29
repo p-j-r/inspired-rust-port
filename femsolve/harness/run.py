@@ -92,6 +92,11 @@ KSP_SUITES = {
         kcase("GMRES(30) + ILU(0)", "convdiff2d:200:200:5:3", "real", "gmres", "ilu", levels=0),
         kcase("GMRES(30) + ILU(2)", "convdiff2d:200:200:5:3", "real", "gmres", "ilu", levels=2),
         kcase("GMRES(30) + ILU(1), complex symmetric", "helm2d:150:150:3.0:0.4", "complex", "gmres", "ilu", levels=1),
+        # additive Schwarz (P4): contiguous blocks, exact local LU
+        kcase("CG + ASM basic, 8 blocks, overlap 1", "lap2d:100:100", "real", "cg", "asm", blocks=8, overlap=1, **{"asm-type": "basic"}),
+        kcase("CG + ASM basic, 8 blocks, overlap 2", "lap2d:100:100", "real", "cg", "asm", blocks=8, overlap=2, **{"asm-type": "basic"}),
+        kcase("GMRES(30) + RAS, 8 blocks, overlap 1", "convdiff2d:200:200:5:3", "real", "gmres", "asm", blocks=8, overlap=1),
+        kcase("GMRES(30) + RAS, 16 blocks, overlap 2", "convdiff2d:200:200:5:3", "real", "gmres", "asm", blocks=16, overlap=2),
     ],
 }
 
