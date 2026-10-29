@@ -1,0 +1,23 @@
+# Standalone workspace root so this crate builds next to the `rsolvers` workspace (PR #1)
+# without being listed in it.
+[workspace]
+
+[package]
+name = "femmesh"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Pure-Rust metric-based mesh adaptation, structured PML meshes and mixed-cell meshes for FEM solvers"
+license = "BSD-2-Clause"
+repository = "https://github.com/p-j-r/inspired-rust-port"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+# Numerical tests are heavy; optimise them even in debug test builds.
+[profile.test]
+opt-level = 2
