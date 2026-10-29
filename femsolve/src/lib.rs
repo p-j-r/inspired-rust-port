@@ -26,6 +26,7 @@ pub mod ksp;
 pub mod linop;
 pub mod lobpcg;
 pub mod maxwell;
+pub mod mixed;
 pub mod mm;
 pub mod nep;
 pub mod opt;

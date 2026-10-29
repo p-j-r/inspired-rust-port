@@ -345,3 +345,14 @@ With `--features parallel` the same kernels reach 20–40 GB/s effective on 4 vC
   The AMG-preconditioned 2-D case needs 21 iterations for 8 modes (10× fewer than unpreconditioned).
 * Chebyshev filtering cost 148 matrix products per wanted vector for the 40 lowest modes of a 2-D Laplacian (degree 20); the polynomial filter is
   weakest on 1-D-like spectra with tiny relative gaps, where a shift-and-invert Krylov method is the better tool.
+
+## 23. Mixed precision (S3)  (measured)
+
+* A single-precision LU with double-precision refinement reaches full accuracy in 3 refinement steps for well-conditioned shifted systems (error 4e-15 against a
+  double LU), but the benefit is modest: factorisation 1.4× faster (4.1 vs 5.7 s, 3-D, 64 000 unknowns, shared pool), each solve 1.5× *slower* (three f32 solves plus three residual
+  products). Break-even is at a few solves per factorisation, so shift-and-invert eigensolves (hundreds of solves) do not benefit; contour methods, frequency sweeps and
+  transient refactorisation (one or a few solves per factorisation) do, as does anything memory-bound.
+* Near an eigenvalue the shifted matrix has `κ ≈ 1/δ`: for δ = 1e-9 the f32 factorisation is useless. The test "residual must drop by a factor 2 per step" catches it after one or two steps
+  and the fallback factorises in double precision on first need; inside a 30-solve shift-and-invert run one solve needed the fallback.
+* A double LU has residual `~ ε‖A‖‖x‖/‖b‖`; for κ = 1e9 that is 4e-7, so "residual below 1e-8" is not a valid acceptance test there: compare against the double-precision residual instead.
+* `faer` accepts `f32` and `Complex<f32>` in the low-level sparse LU through the same generic calls, with no changes besides the element type (the `FaerScalar` bound `Real = f64` only concerns the wrapper types here).

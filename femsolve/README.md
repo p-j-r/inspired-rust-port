@@ -18,6 +18,7 @@ measured, and [`../docs/NYX_INTEGRATION.md`](../docs/NYX_INTEGRATION.md) for how
 | `amg` | smoothed-aggregation **AMG** for real and complex-symmetric matrices, shifted-Laplacian helper for Helmholtz/PML |
 | `contour` | **contour-integral** eigensolver (block Sakurai–Sugiura / CIRR), `fs-contour` |
 | `jd` | **Jacobi–Davidson** with harmonic/standard extraction, locking and Schur deflation for interior eigenvalues |
+| `mixed` | **mixed-precision** LU (f32 factor + double-precision refinement, automatic fallback) |
 | `fieldsplit` | **field-split / Schur-complement** preconditioners for coupled problems |
 | `lobpcg`, `chebfsi` | **LOBPCG** (constraints, soft locking, complex Hermitian) and **Chebyshev-filtered subspace iteration** for many lowest modes |
 | `expm` | **matrix-exponential action** `exp(tA)v` (Krylov) and dense `expm` |

@@ -79,7 +79,7 @@ pub enum Threads {
 }
 
 impl Threads {
-    fn par(self) -> Par {
+    pub(crate) fn par(self) -> Par {
         match self {
             Threads::Global => faer::get_global_parallelism(),
             Threads::Sequential => Par::Seq,
@@ -145,14 +145,14 @@ pub trait ShiftedSolver<T: Scalar> {
 
 /// Union pattern (CSC) of `A`, `B` (or the identity), optionally restricted to the lower
 /// triangle, with the values of `A` and `B` scattered onto it.
-struct Assembled<T: Scalar> {
-    col_ptr: Vec<u32>,
-    row_idx: Vec<u32>,
-    a: Vec<T>,
-    b: Vec<T>,
+pub(crate) struct Assembled<T: Scalar> {
+    pub(crate) col_ptr: Vec<u32>,
+    pub(crate) row_idx: Vec<u32>,
+    pub(crate) a: Vec<T>,
+    pub(crate) b: Vec<T>,
 }
 
-fn assemble<T: Scalar>(a: &Csr<T>, b: Option<&Csr<T>>, lower: bool) -> Result<Assembled<T>, SolverError> {
+pub(crate) fn assemble<T: Scalar>(a: &Csr<T>, b: Option<&Csr<T>>, lower: bool) -> Result<Assembled<T>, SolverError> {
     let n = a.nrows();
     if a.ncols() != n {
         return Err(SolverError::InvalidArgument("matrix must be square"));
