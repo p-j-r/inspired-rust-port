@@ -8,11 +8,13 @@
 pub mod basis;
 pub mod csr;
 pub mod dense;
+pub mod direct;
 pub mod eps;
 pub mod faer_glue;
 pub mod kernels;
 pub mod linop;
 pub mod par;
+pub mod problem;
 pub mod rng;
 pub mod scalar;
 pub mod vecops;

@@ -15,6 +15,9 @@ pub trait FaerScalar: Scalar {
     type Elem: ComplexField<Real = f64> + Copy;
     fn to_faer(self) -> Self::Elem;
     fn from_faer(x: Self::Elem) -> Self;
+    /// Identity reinterpretations of slices (implemented per type, so no `unsafe` is needed).
+    fn faer_slice(s: &[Self]) -> &[Self::Elem];
+    fn faer_slice_mut(s: &mut [Self]) -> &mut [Self::Elem];
 }
 
 impl FaerScalar for f64 {
@@ -27,6 +30,14 @@ impl FaerScalar for f64 {
     fn from_faer(x: f64) -> f64 {
         x
     }
+    #[inline]
+    fn faer_slice(s: &[f64]) -> &[f64] {
+        s
+    }
+    #[inline]
+    fn faer_slice_mut(s: &mut [f64]) -> &mut [f64] {
+        s
+    }
 }
 
 impl FaerScalar for C64 {
@@ -38,6 +49,14 @@ impl FaerScalar for C64 {
     #[inline]
     fn from_faer(x: faer::c64) -> C64 {
         x
+    }
+    #[inline]
+    fn faer_slice(s: &[C64]) -> &[faer::c64] {
+        s
+    }
+    #[inline]
+    fn faer_slice_mut(s: &mut [C64]) -> &mut [faer::c64] {
+        s
     }
 }
 
