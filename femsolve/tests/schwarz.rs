@@ -10,7 +10,7 @@ use femsolve::ksp::{Cg, CgKind, CgOptions, Gmres, GmresOptions, Tolerances};
 use femsolve::linop::Preconditioner;
 use femsolve::rng::random_vector;
 use femsolve::schwarz::{Schwarz, SchwarzKind, SchwarzOptions, contiguous_partition, graph_partition};
-use femsolve::{C64, Csr, Scalar};
+use femsolve::{C64, Csr};
 
 fn convdiff(nx: usize, bx: f64, by: f64) -> Csr<f64> {
     let h = 1.0 / (nx as f64 + 1.0);

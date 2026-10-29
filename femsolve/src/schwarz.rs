@@ -105,9 +105,9 @@ pub fn graph_partition<T: Scalar>(a: &Csr<T>, parts: usize) -> Vec<usize> {
     let mut remaining = n - seeds.len();
     while remaining > 0 {
         let mut progressed = false;
-        for p in 0..seeds.len() {
+        for (p, fr) in frontier.iter_mut().enumerate() {
             let mut next = Vec::new();
-            for &u in &frontier[p] {
+            for &u in fr.iter() {
                 for &v in &adj[u] {
                     if part[v as usize] == NONE {
                         part[v as usize] = p;
@@ -117,7 +117,7 @@ pub fn graph_partition<T: Scalar>(a: &Csr<T>, parts: usize) -> Vec<usize> {
                     }
                 }
             }
-            frontier[p] = next;
+            *fr = next;
         }
         if !progressed {
             // disconnected leftovers: give them to part 0

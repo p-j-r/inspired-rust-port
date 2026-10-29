@@ -309,3 +309,22 @@ With `--features parallel` the same kernels reach 20–40 GB/s effective on 4 vC
   generous overlap or a larger problem.
 * RAS needed fewer GMRES iterations than ASM (21 vs 26) on convection–diffusion, and more overlap helped RAS (13 with 3 layers), as in the literature.
 * Subdomain solves are embarrassingly parallel and summed in subdomain order, so scoped threads give bit-identical results for any worker count.
+
+## 21. Sensitivities, tracking and optimisation (N3, O1)  (measured)
+
+* The right eigenvector is **not** a substitute for the left one once the matrix is non-normal: on a 12×12 tridiagonal
+  with 5:1 asymmetry the derivative formula with `y = x` was off by more than 1e-3 relative, with an inverse-iteration left vector it matched finite
+  differences to 1e-5. The finite-difference reference itself degrades with the eigenvalue condition number (n = 30 gave 1.4e-3 noise, n = 12 gave 1e-5).
+* For complex *symmetric* problems the left vector is the conjugate of the right one (`yᴴ = xᵀ`): no extra solve.
+* Mode tracking by `B`-overlap with an optimal (Hungarian) assignment follows an exact crossing; sorting by eigenvalue loses the
+  branch (deviation > 0.5 after the crossing in the test). Near-degenerate pairs give overlaps of about ½ each: that is what the
+  `uncertain` flag is for.
+* **Strong-Wolfe line searches fail at the resolution of `f`**: with `gtol = 1e-10` on a quadratic whose minimum value is about −60 the
+  Armijo test `f ≤ f₀ + c₁αg·d` cannot be satisfied once the expected decrease is below `1e-14|f|`; adding a rounding allowance of `1e-14·max(1,|f|)` fixed it.
+* Nonlinear CG needs the step-length heuristic `α₀ = α_prev·(g_prevᵀd_prev)/(gᵀd)` (N&W 3.60): without it Rosenbrock(10) needed 4839 function evaluations, with it 637;
+  L-BFGS needed 98.
+* MMA: the penalised dual (`λ_i ≤ c`, exact penalty form of Svanberg's artificial variables) with coordinate bisection is exact for one constraint
+  and keeps an infeasible start workable; the topology problem converged to a 10× compliance reduction with volume exactly at the limit, but 23 % of the
+  elements stay grey without a filter or projection.
+* The adjoint gradient of the compliance needs *no second solve* for a self-adjoint problem with `g = f`; `adjoint_gradient` still does both solves on one factorisation (2 triangular solves) so
+  non-self-adjoint objectives work.
