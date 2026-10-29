@@ -284,7 +284,15 @@ mod tests {
         // zero, identity, a Jordan block (defective), a diagonal matrix with repeated entries,
         // and a pure permutation (all eigenvalues on the unit circle).
         let zero = Dense::<C64>::zeros(5, 5);
-        let jordan = Dense::from_fn(6, 6, |i, j| if i == j { C64::new(2.0, 1.0) } else if j == i + 1 { C64::ONE } else { C64::ZERO });
+        let jordan = Dense::from_fn(6, 6, |i, j| {
+            if i == j {
+                C64::new(2.0, 1.0)
+            } else if j == i + 1 {
+                C64::ONE
+            } else {
+                C64::ZERO
+            }
+        });
         let diag = Dense::from_fn(6, 6, |i, j| if i == j { C64::new((i / 2) as f64, 0.0) } else { C64::ZERO });
         let perm = Dense::from_fn(7, 7, |i, j| if j == (i + 1) % 7 { C64::ONE } else { C64::ZERO });
         for a in [Dense::identity(4), zero, jordan, diag, perm] {
@@ -354,11 +362,11 @@ mod tests {
         // The same for a real symmetric matrix.
         let rs = Dense::from_fn(n, n, |i, j| ((i + j) as f64).sin() + if i == j { 3.0 } else { 0.0 });
         let (w, q) = crate::dense::hermitian_eig(&rs).unwrap();
-        for k in 0..n {
+        for (k, wk) in w.iter().enumerate() {
             let col = q.col(k);
             for i in (0..n).step_by(5) {
                 let aq: f64 = (0..n).map(|j| rs[(i, j)] * col[j]).sum();
-                assert!((aq - w[k] * col[i]).abs() < 1e-11);
+                assert!((aq - wk * col[i]).abs() < 1e-11);
             }
         }
     }

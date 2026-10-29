@@ -73,7 +73,14 @@ impl<T: Scalar> OrthWork<T> {
     }
 }
 
-fn apply_b<T: Scalar>(bop: &dyn LinearOperator<T>, w: &[T], u: &mut [T], b: usize, wk_products: &mut usize, wk_time: &mut Duration) {
+fn apply_b<T: Scalar>(
+    bop: &dyn LinearOperator<T>,
+    w: &[T],
+    u: &mut [T],
+    b: usize,
+    wk_products: &mut usize,
+    wk_time: &mut Duration,
+) {
     let t0 = Instant::now();
     bop.apply_block(w, u, b);
     *wk_products += b;
@@ -130,7 +137,14 @@ pub(crate) fn orthogonalize<T: Scalar>(
 }
 
 /// Column-wise CGS2 inside the block; fills `wk.r`.
-fn intra_block<T: Scalar>(head: BasisView<'_, T>, k: usize, w: &mut [T], b: usize, weight: Option<&dyn LinearOperator<T>>, wk: &mut OrthWork<T>) {
+fn intra_block<T: Scalar>(
+    head: BasisView<'_, T>,
+    k: usize,
+    w: &mut [T],
+    b: usize,
+    weight: Option<&dyn LinearOperator<T>>,
+    wk: &mut OrthWork<T>,
+) {
     let n = wk.n;
     let weighted = weight.is_some();
     wk.r.fill(T::ZERO);
@@ -162,7 +176,7 @@ fn intra_block<T: Scalar>(head: BasisView<'_, T>, k: usize, w: &mut [T], b: usiz
         }
         let nsq = if weighted { dotc(cur, ucur).re() } else { norm2_sq(cur) };
         let nrm = nsq.max(0.0).sqrt();
-        if !(nrm > 100.0 * f64::EPSILON * scale0) || !nrm.is_finite() {
+        if nrm.is_nan() || nrm <= 100.0 * f64::EPSILON * scale0 || !nrm.is_finite() {
             // Breakdown: continue with a fresh vector orthogonal to everything so far.
             wk.breakdowns += 1;
             let seed = wk.next_seed();

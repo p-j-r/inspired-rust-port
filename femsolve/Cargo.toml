@@ -23,3 +23,11 @@ parallel = ["dep:rayon"]
 [dev-dependencies]
 proptest = "1"
 
+
+[[bin]]
+name = "fs-eps"
+path = "src/bin/fs_eps.rs"
+
+[[bin]]
+name = "fs-gen"
+path = "src/bin/fs_gen.rs"

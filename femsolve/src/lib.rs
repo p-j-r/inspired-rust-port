@@ -6,6 +6,7 @@
 //! SLEPc. See `docs/STATUS.md` for what is done, what was measured and what is still open.
 
 pub mod basis;
+pub mod bundle;
 pub mod csr;
 pub mod dense;
 pub mod direct;
@@ -13,6 +14,7 @@ pub mod eps;
 pub mod faer_glue;
 pub mod kernels;
 pub mod linop;
+pub mod mm;
 pub mod par;
 pub mod problem;
 pub mod rng;

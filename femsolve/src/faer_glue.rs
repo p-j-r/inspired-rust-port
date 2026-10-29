@@ -70,9 +70,7 @@ pub(crate) fn hermitian_eig<T: FaerScalar>(a: &Dense<T>) -> Result<(Vec<f64>, De
         return Ok((Vec::new(), Dense::zeros(0, 0)));
     }
     // Mirror the lower triangle so the input is exactly Hermitian whatever the caller stored.
-    let m = Mat::<T::Elem>::from_fn(n, n, |i, j| {
-        if i >= j { a[(i, j)].to_faer() } else { a[(j, i)].conj().to_faer() }
-    });
+    let m = Mat::<T::Elem>::from_fn(n, n, |i, j| if i >= j { a[(i, j)].to_faer() } else { a[(j, i)].conj().to_faer() });
     let evd = m.self_adjoint_eigen(Side::Lower).map_err(|_| DenseError::NoConvergence)?;
     let (u, s) = (evd.U(), evd.S());
     let w: Vec<f64> = (0..n).map(|i| Scalar::re(T::from_faer(s.column_vector()[i]))).collect();

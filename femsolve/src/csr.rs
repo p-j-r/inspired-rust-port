@@ -209,10 +209,7 @@ impl<T: Scalar> Csr<T> {
             return false;
         }
         let scale = self.values.iter().fold(0.0f64, |m, v| m.max(v.modulus()));
-        self.values
-            .iter()
-            .zip(&t.values)
-            .all(|(a, b)| (*a - if conj { b.conj() } else { *b }).modulus() <= tol * scale)
+        self.values.iter().zip(&t.values).all(|(a, b)| (*a - if conj { b.conj() } else { *b }).modulus() <= tol * scale)
     }
 
     /// Dense row-major copy (tests and tiny problems only).
@@ -429,6 +426,7 @@ pub fn mass_1d(n: usize, h: f64) -> Csr<f64> {
 mod tests {
     use super::*;
     use crate::rng::random_vector;
+    use crate::vecops;
 
     #[test]
     fn spmv_matches_dense_and_fused_dot_is_bit_identical() {

@@ -57,7 +57,7 @@ where
     if b == 0 {
         return Err(EpsError::InvalidArgument("block_size must be at least 1"));
     }
-    if !(opts.tol > 0.0) {
+    if opts.tol.is_nan() || opts.tol <= 0.0 {
         return Err(EpsError::InvalidArgument("tol must be positive"));
     }
     if !(0.1..=0.9).contains(&opts.keep) {
@@ -66,15 +66,11 @@ where
     if opts.kind == Kind::General && !T::IS_COMPLEX {
         return Err(EpsError::Unsupported("the general (non-Hermitian) kind needs a complex scalar"));
     }
-    if let Some(w) = weight {
-        if w.dim() != n {
-            return Err(EpsError::InvalidArgument("weight matrix dimension differs from the operator"));
-        }
+    if weight.is_some_and(|w| w.dim() != n) {
+        return Err(EpsError::InvalidArgument("weight matrix dimension differs from the operator"));
     }
-    if let Some(s) = start {
-        if s.len() != n {
-            return Err(EpsError::InvalidArgument("start vector has wrong length"));
-        }
+    if start.is_some_and(|s| s.len() != n) {
+        return Err(EpsError::InvalidArgument("start vector has wrong length"));
     }
     // The decomposition needs `ncv + b` basis columns, which must fit in the space.
     let default_ncv = (2 * nev).max(nev + 15).max(nev + 2 * b);
@@ -99,6 +95,7 @@ where
     let mut work = OrthWork::<T>::new(n, ncv + b, b, weighted, opts.seed ^ 0xB0B0_B0B0);
     let mut tm = Timings::default();
     let mut history = Vec::new();
+    let mut matvecs = 0usize;
 
     // Start block: user vector first, pseudo-random fill, then B-orthonormalise.
     {
@@ -111,8 +108,22 @@ where
             cols[c * n..(c + 1) * n].copy_from_slice(&random_vector::<T>(n, opts.seed.wrapping_add(0x1000 + c as u64)));
         }
         let nrm = norm2(&cols[..n]);
-        if !(nrm > 0.0) || !nrm.is_finite() {
+        if nrm.is_nan() || nrm <= 0.0 || !nrm.is_finite() {
             return Err(EpsError::InvalidArgument("start vector must be non-zero and finite"));
+        }
+        let in_range = opts.start_in_range.unwrap_or(weighted && opts.kind == Kind::Hermitian);
+        if in_range {
+            // Force the start block into the range of the operator (see `EpsOptions`).
+            let mut tmp = vec![T::ZERO; n * b];
+            let t0 = Instant::now();
+            op.apply_block(&cols[..n * b], &mut tmp, b);
+            tm.operator += t0.elapsed().as_secs_f64();
+            matvecs += b;
+            cols[..n * b].copy_from_slice(&tmp);
+            let nr = norm2(&cols[..n]);
+            if nr.is_nan() || nr <= 0.0 {
+                return Err(EpsError::InvalidArgument("start vector lies in the null space of the operator"));
+            }
         }
         let t0 = Instant::now();
         let (head, w) = v.split_cols_mut(0);
@@ -124,7 +135,7 @@ where
     }
 
     let (mut nconv, mut kept) = (0usize, 0usize);
-    let (mut its, mut matvecs) = (0usize, 0usize);
+    let mut its = 0usize;
     let reason;
     loop {
         its += 1;
@@ -172,13 +183,19 @@ where
 
         let mut k = nconv;
         let mut run = true;
-        let mut cycle_errs = Vec::new();
+        let (mut cycle_errs, mut cycle_ritz) = (Vec::new(), Vec::new());
         for p in 0..m {
             let (theta, rho) = (ritz.theta[p], ritz.rho[p]);
             let err = if rho == 0.0 {
                 0.0
             } else if theta.norm() > 0.0 {
-                rho / theta.norm()
+                match opts.original_shift {
+                    None => rho / theta.norm(),
+                    Some(sigma) => {
+                        let denom = theta.norm() * (sigma + C64::ONE / theta).norm();
+                        if denom > 0.0 { rho / denom } else { f64::MAX }
+                    }
+                }
             } else {
                 f64::MAX
             };
@@ -191,10 +208,11 @@ where
             }
             if opts.record_history && p < nev + 2 {
                 cycle_errs.push(err);
+                cycle_ritz.push(theta);
             }
         }
         if opts.record_history {
-            history.push(HistoryEntry { cycle: its, nconv: k, nv, matvecs, errors: cycle_errs });
+            history.push(HistoryEntry { cycle: its, nconv: k, nv, matvecs, errors: cycle_errs, ritz: cycle_ritz });
         }
 
         let stop = if k >= nev {
@@ -267,9 +285,7 @@ where
                 }
             }
         }
-        for c in 0..cols {
-            lam[nconv + c] = ritz.theta[c];
-        }
+        lam[nconv..nconv + cols].copy_from_slice(&ritz.theta[..cols]);
         nconv = k;
         if stop.is_none() {
             v.move_cols(nv, new_kept, b);
@@ -317,6 +333,7 @@ where
         errors: idx.iter().map(|&i| errs[i]).collect(),
         vectors,
         nconv,
+        ncv,
         iterations: its,
         matvecs,
         b_products: work.b_products,
@@ -374,9 +391,10 @@ fn solve_projected<T: Scalar + FaerScalar>(
             let (mut s, mut z) = schur(&tact)?;
             reorder(&mut s, &mut z, m, |c| opts.which.key(c));
             // F·Z (b × m)
-            let fz = Dense::<C64>::from_fn(b, m, |r, c| (0..m).fold(C64::ZERO, |a, i| a + f(r, i).to_c64() * z[(i, c)]));
+            let fz =
+                Dense::<C64>::from_fn(b, m, |r, c| (0..m).fold(C64::ZERO, |a, i| a + f(r, i).to_c64() * z[(i, c)]));
             let mut rho = vec![0.0; m];
-            for p in 0..m {
+            for (p, rho_p) in rho.iter_mut().enumerate() {
                 let y = triangular_eigenvector(&s, m, p);
                 let ynorm = y.iter().map(|c| c.norm_sqr()).sum::<f64>().sqrt();
                 let mut acc = 0.0;
@@ -384,7 +402,7 @@ fn solve_projected<T: Scalar + FaerScalar>(
                     let val = (0..=p).fold(C64::ZERO, |a, i| a + fz[(r, i)] * y[i]);
                     acc += val.norm_sqr();
                 }
-                rho[p] = acc.sqrt() / ynorm;
+                *rho_p = acc.sqrt() / ynorm;
             }
             let theta = (0..m).map(|p| s[(p, p)]).collect();
             let q = Dense::<T>::from_fn(m, m, |i, j| T::from_parts(z[(i, j)].re, z[(i, j)].im));

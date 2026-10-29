@@ -114,10 +114,8 @@ fn assemble<T: Scalar>(a: &Csr<T>, b: Option<&Csr<T>>, lower: bool) -> Result<As
     if a.ncols() != n {
         return Err(SolverError::InvalidArgument("matrix must be square"));
     }
-    if let Some(b) = b {
-        if b.nrows() != n || b.ncols() != n {
-            return Err(SolverError::InvalidArgument("A and B must have the same shape"));
-        }
+    if b.is_some_and(|b| b.nrows() != n || b.ncols() != n) {
+        return Err(SolverError::InvalidArgument("A and B must have the same shape"));
     }
     if a.nnz() + n >= u32::MAX as usize / 2 {
         return Err(SolverError::TooLarge);
@@ -237,9 +235,8 @@ impl<T: FaerScalar> ShiftedFactorization<T> {
         let lower = self.lower.as_ref().expect("lower pattern exists for PositiveDefinite");
         if self.sym_llt.is_none() {
             let t0 = Instant::now();
-            self.sym_llt = Some(
-                SymbolicLlt::try_new(Self::pattern(lower, n), Side::Lower).map_err(|_| SolverError::OutOfMemory)?,
-            );
+            self.sym_llt =
+                Some(SymbolicLlt::try_new(Self::pattern(lower, n), Side::Lower).map_err(|_| SolverError::OutOfMemory)?);
             self.stats.analyse_secs += t0.elapsed().as_secs_f64();
             self.stats.symbolic_count += 1;
         }
@@ -265,9 +262,8 @@ impl<T: FaerScalar> ShiftedFactorization<T> {
         let n = self.n;
         if self.sym_lu.is_none() {
             let t0 = Instant::now();
-            self.sym_lu = Some(
-                SymbolicLu::try_new(Self::pattern(&self.full, n)).map_err(|_| SolverError::OutOfMemory)?,
-            );
+            self.sym_lu =
+                Some(SymbolicLu::try_new(Self::pattern(&self.full, n)).map_err(|_| SolverError::OutOfMemory)?);
             self.stats.analyse_secs += t0.elapsed().as_secs_f64();
             self.stats.symbolic_count += 1;
         }

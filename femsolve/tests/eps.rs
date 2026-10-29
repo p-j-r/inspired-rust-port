@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)] // index loops mirror the mathematics in these tests
 mod common;
 
 use common::*;
@@ -7,7 +8,15 @@ use femsolve::{C64, Csr, LinearOperator, Scalar};
 
 /// Every returned pair satisfies the contract: unit vectors with true residual
 /// `‖Ax − λx‖ ≤ slack·tol·|λ|`, and (for Hermitian problems) mutually orthogonal.
-fn check_pairs<T: Scalar>(a: &Csr<T>, b: Option<&Csr<T>>, values: &[C64], vecs: &femsolve::basis::Basis<T>, tol: f64, slack: f64, orthogonal: bool) {
+fn check_pairs<T: Scalar>(
+    a: &Csr<T>,
+    b: Option<&Csr<T>>,
+    values: &[C64],
+    vecs: &femsolve::basis::Basis<T>,
+    tol: f64,
+    slack: f64,
+    orthogonal: bool,
+) {
     for i in 0..values.len() {
         let x = vecs.col(i);
         if b.is_none() {
@@ -80,7 +89,10 @@ fn complex_hermitian_gauge_laplacian() {
 fn assert_valid_top_spectrum(got: &[f64], exact: &[f64], tol: f64) {
     let mut avail: Vec<f64> = exact.to_vec();
     for &g in got {
-        let k = avail.iter().position(|e| (e - g).abs() < tol).unwrap_or_else(|| panic!("{g} is not an eigenvalue (or exceeds its multiplicity)"));
+        let k = avail
+            .iter()
+            .position(|e| (e - g).abs() < tol)
+            .unwrap_or_else(|| panic!("{g} is not an eigenvalue (or exceeds its multiplicity)"));
         avail.remove(k);
     }
     let lowest = got.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -195,12 +207,17 @@ fn general_kind_nonnormal_with_known_real_spectrum() {
     }
     let a = Csr::from_triplets(n, n, &t).unwrap();
     let s = (1.0 - c * c).sqrt();
-    let exact: Vec<f64> = (1..=n).map(|k| 2.0 - 2.0 * s * (k as f64 * std::f64::consts::PI / (n as f64 + 1.0)).cos()).collect();
+    let exact: Vec<f64> =
+        (1..=n).map(|k| 2.0 - 2.0 * s * (k as f64 * std::f64::consts::PI / (n as f64 + 1.0)).cos()).collect();
     let opts = EpsOptions { which: Which::LargestReal, tol: 1e-9, max_it: Some(3000), ..EpsOptions::general(3) };
     let res = krylov_schur(&a, None, None, &opts).unwrap();
     assert_eq!(res.reason, EpsReason::Converged);
     for i in 0..3 {
-        assert!((res.values[i].re - exact[n - 1 - i]).abs() < 1e-6 && res.values[i].im.abs() < 1e-6, "{i}: {}", res.values[i]);
+        assert!(
+            (res.values[i].re - exact[n - 1 - i]).abs() < 1e-6 && res.values[i].im.abs() < 1e-6,
+            "{i}: {}",
+            res.values[i]
+        );
     }
     check_pairs(&a, None, &res.values[..3], &res.vectors, 1e-9, 50.0, false);
 }
@@ -210,7 +227,8 @@ fn general_kind_block_variant_and_history() {
     let n = 150;
     let a = complex_symmetric_shifted(n, 0.2);
     let exact = laplacian_1d_eigenvalues(n);
-    let opts = EpsOptions { tol: 1e-9, block_size: 2, record_history: true, max_it: Some(3000), ..EpsOptions::general(4) };
+    let opts =
+        EpsOptions { tol: 1e-9, block_size: 2, record_history: true, max_it: Some(3000), ..EpsOptions::general(4) };
     let res = krylov_schur(&a, None, None, &opts).unwrap();
     assert_eq!(res.reason, EpsReason::Converged);
     assert_eq!(res.history.len(), res.iterations);

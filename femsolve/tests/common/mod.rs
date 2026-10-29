@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(clippy::needless_range_loop)]
 //! Shared helpers for the integration tests: independent residual checks and analytic spectra.
 
 use femsolve::{C64, Csr, LinearOperator, Scalar};

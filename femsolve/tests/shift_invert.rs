@@ -1,3 +1,4 @@
+#![allow(clippy::needless_range_loop)] // index loops mirror the mathematics in these tests
 mod common;
 
 use common::*;
@@ -184,4 +185,25 @@ fn solver_solves_shifted_systems_exactly() {
     }
     assert_eq!(f.stats().symbolic_count, 1);
     let _ = <C64 as Scalar>::ONE;
+}
+
+#[test]
+fn original_problem_convergence_gives_tight_relative_residuals_for_small_eigenvalues() {
+    // Shift below a spectrum whose eigenvalues are tiny (~1e-5): SLEPc's test ‖r‖/|θ| < tol only
+    // guarantees ‖Ax−λBx‖/|λ| < tol/|λ|; testing the original problem gives the requested tol.
+    let n = 1000;
+    let p = EigenProblem { a: laplacian_1d(n), b: Some(mass_1d(n, 1.0)), symmetry: Symmetry::Hermitian };
+    let mut s = KrylovSchurShiftInvert::new(&p, Definiteness::PositiveDefinite).unwrap();
+    s.opts.tol = 1e-8;
+    s.opts.ncv = Some(14);
+    let tight = s.solve_near(-1e-3, 4).unwrap();
+    assert!(tight.converged);
+    assert!(tight.residuals.iter().take(4).all(|&r| r < 1e-7), "{:?}", tight.residuals);
+    s.theta_convergence = true;
+    let loose = s.solve_near(-1e-3, 4).unwrap();
+    assert!(loose.converged);
+    let worst_loose = loose.residuals.iter().take(4).cloned().fold(0.0, f64::max);
+    let worst_tight = tight.residuals.iter().take(4).cloned().fold(0.0, f64::max);
+    assert!(worst_loose > 10.0 * worst_tight, "loose {worst_loose:e} tight {worst_tight:e}");
+    assert!(loose.restarts <= tight.restarts);
 }

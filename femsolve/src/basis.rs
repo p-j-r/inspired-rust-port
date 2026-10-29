@@ -221,7 +221,9 @@ impl<T: Scalar> BasisView<'_, T> {
     /// fusing it saves one sweep over `V`.
     pub fn sub_block_then_dots(&self, k: usize, h: &[T], w: &mut [T], b: usize, h2: &mut [T], nrm2: &mut [f64]) {
         let n = self.n;
-        assert!(k * n <= self.data.len() && w.len() >= n * b && h.len() >= k * b && h2.len() >= k * b && nrm2.len() >= b);
+        assert!(
+            k * n <= self.data.len() && w.len() >= n * b && h.len() >= k * b && h2.len() >= k * b && nrm2.len() >= b
+        );
         let nch = n.div_ceil(BCHUNK);
         let slot = k * b + b;
         let wc = RawCols::new(w, n, b);

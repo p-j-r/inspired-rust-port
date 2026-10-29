@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Compare femsolve against SLEPc on identical problem bundles (port item V1).
+
+  python3 harness/run.py run    --suite quick --out harness/results/quick.jsonl
+  python3 harness/run.py report harness/results/quick.jsonl
+
+Setup (Ubuntu 24.04):
+  apt install libpetsc-real-dev libslepc-real-dev libpetsc-complex-dev libslepc-complex-dev libopenmpi-dev pkg-config
+  cargo build --release -p femsolve
+  make -C femsolve/harness/c
+
+Acceptance tiers (see docs/STATUS.md):
+  A  same algorithm, same start vector and options: identical restart and operator-application
+     counts, eigenvalues to 1e-10 relative, residuals recomputed by each side independently
+  B  different path to the same answer: eigenvalue sets to 1e-8 and residuals below tolerance
+     (used when the spectrum is degenerate, where which copy emerges depends on rounding)
+Timing: minimum of repeated solves after a warm-up, both sides in one session; differences
+under 10 % are ties.
+"""
+import argparse, json, os, subprocess, sys, shutil
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+RUST_EPS = os.path.join(ROOT, "target", "release", "fs-eps")
+RUST_GEN = os.path.join(ROOT, "target", "release", "fs-gen")
+DATA = os.path.join(HERE, "data")
+SLEPC = {"real": os.path.join(HERE, "c", "real", "slepc_eps"), "complex": os.path.join(HERE, "c", "complex", "slepc_eps")}
+
+# name, spec, scalar, hermitian, args (shared), tier
+def case(name, spec, scalar, herm, tier="A", **kw):
+    return dict(name=name, spec=spec, scalar=scalar, herm=herm, tier=tier, **kw)
+
+SUITES = {
+    "quick": [
+        case("fe1d ncv=12", "fe1d:2000", "real", 1, sigma=(0.5, 0), nev=4, ncv=12),
+        case("fe1d default", "fe1d:2000", "real", 1, sigma=(0.5, 0), nev=4),
+        case("fe1d nev=10 ncv=14", "fe1d:2000", "real", 1, sigma=(0.5, 0), nev=10, ncv=14, tol=1e-10),
+        # SLEPc's test is ‖r‖/|θ|; eigenvalues λ ~ 1e-5 here make the relative residual of the original problem ~ tol/|λ|.
+        case("fe1d Cholesky (shift below spectrum)", "fe1d:2000", "real", 1, sigma=(-1e-4, 0), nev=5, ncv=12, definite=1, resid_max=1e-2),
+        case("gauge1d (complex Hermitian)", "gauge1d:2000:0.7", "complex", 1, sigma=(0.513, 0), nev=4),
+        case("gauge1d ncv=8", "gauge1d:2000:0.7", "complex", 1, sigma=(0.513, 0), nev=4, ncv=8),
+        case("pml1d (complex symmetric)", "pml1d:2000:0.3", "complex", 0, sigma=(0.5133, 0.3001), nev=4),
+        case("pml1d ncv=8", "pml1d:2000:0.3", "complex", 0, sigma=(0.5133, 0.3001), nev=4, ncv=8),
+        case("pml2d pencil (complex B)", "pml2d:60:50:3.0", "complex", 0, sigma=(1.0137, 0.0), nev=4),
+        case("lap1d direct, largest", "lap1d:600", "real", 1, mode="direct", which="largest", nev=3, ncv=20, tol=1e-8, maxit=3000),
+        case("lap2d (degenerate)", "lap2d:100:100", "real", 1, tier="B", sigma=(2.013, 0), nev=6),
+    ],
+    "full": [],
+}
+SUITES["full"] = SUITES["quick"] + [
+    case("fe1d n=20000", "fe1d:20000", "real", 1, sigma=(0.5, 0), nev=8, reps=5),
+    case("gauge1d n=20000", "gauge1d:20000:0.7", "complex", 1, sigma=(0.513, 0), nev=8, reps=5),
+    case("pml1d n=20000", "pml1d:20000:0.3", "complex", 0, sigma=(0.5133, 0.3001), nev=8, reps=5),
+    case("pml2d 200x200", "pml2d:200:200:3.0", "complex", 0, sigma=(1.0137, 0.0), nev=6, reps=3),
+    case("lap3d 40 Cholesky", "lap3d:40", "real", 1, sigma=(-0.1, 0), nev=6, definite=1, reps=3),
+]
+
+def ensure_bundle(spec):
+    d = os.path.join(DATA, spec.replace(":", "_"))
+    if not os.path.exists(os.path.join(d, "A.mtx")):
+        os.makedirs(DATA, exist_ok=True)
+        subprocess.run([RUST_GEN, spec, d], check=True, stdout=subprocess.DEVNULL)
+    return d
+
+def run_json(cmd, env=None):
+    out = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    for line in out.stdout.splitlines():
+        if line.startswith("{"):
+            return json.loads(line)
+    return {"error": (out.stderr or out.stdout)[-500:]}
+
+def run_case(c):
+    d = ensure_bundle(c["spec"])
+    reps = c.get("reps", 3)
+    sre, sim = c.get("sigma", (0, 0))
+    mode = c.get("mode", "shift")
+    common = dict(nev=c.get("nev", 4), tol=c.get("tol", 1e-8), reps=reps)
+    rust = [RUST_EPS, d, "--mode", mode, "--nev", str(common["nev"]), "--tol", str(common["tol"]), "--reps", str(reps),
+            "--sigma-re", str(sre), "--sigma-im", str(sim), "--which", c.get("which", "largest")]
+    slepc = [SLEPC[c["scalar"]], d, "-herm", str(c["herm"]), "-mode", mode, "-nev", str(common["nev"]), "-tol", str(common["tol"]),
+             "-reps", str(reps), "-sigma_re", str(sre), "-sigma_im", str(sim), "-which", c.get("which", "largest")]
+    if "ncv" in c:
+        rust += ["--ncv", str(c["ncv"])]
+        slepc += ["-ncv", str(c["ncv"])]
+    if "maxit" in c:
+        rust += ["--maxit", str(c["maxit"])]
+        slepc += ["-maxit", str(c["maxit"])]
+    if c.get("definite"):
+        rust += ["--definite"]
+        slepc += ["-definite", "1"]
+    # Complex-valued PETSc cannot read an imaginary shift in the real build; the real cases use sim = 0.
+    return dict(case=c["name"], spec=c["spec"], tier=c["tier"], scalar=c["scalar"], resid_max=c.get("resid_max", 100 * common["tol"]),
+                rust=run_json(rust), slepc=run_json(slepc))
+
+def rel_diff(a, b):
+    za, zb = complex(*a), complex(*b)
+    return abs(za - zb) / max(abs(zb), 1e-300)
+
+def judge(r):
+    a, b = r["rust"], r["slepc"]
+    if "error" in a or "error" in b:
+        return "ERROR", "rust: %s | slepc: %s" % (a.get("error", "ok")[:80], b.get("error", "ok")[:80])
+    nev = min(len(a["values"]), len(b["values"]))
+    sigma_sorted = lambda vs: vs
+    dv = max((rel_diff(x, y) for x, y in zip(a["values"][:nev], b["values"][:nev])), default=float("nan"))
+    res = max(a["true_rel_resid"] + b["true_rel_resid"] + [0])
+    same_counts = a["restarts"] == b["restarts"] and a["matvecs"] == b["matvecs"]
+    tol = a["tol"]
+    res_limit = r.get("resid_max", 100 * tol)
+    if r["tier"] == "A":
+        ok = same_counts and dv < 1e-10 and res < res_limit
+        why = "restarts %d/%d matvecs %d/%d max|dλ|/|λ|=%.1e max resid=%.1e" % (a["restarts"], b["restarts"], a["matvecs"], b["matvecs"], dv, res)
+    else:
+        # tier B: compare as sets (sorted by value), allow different counts
+        key = lambda v: (round(v[0], 6), round(v[1], 6))
+        va, vb = sorted(a["values"][:nev], key=key), sorted(b["values"][:nev], key=key)
+        dv = max((rel_diff(x, y) for x, y in zip(va, vb)), default=float("nan"))
+        ok = dv < 1e-8 and res < res_limit
+        why = "restarts %d/%d matvecs %d/%d max|dλ|/|λ|=%.1e max resid=%.1e" % (a["restarts"], b["restarts"], a["matvecs"], b["matvecs"], dv, res)
+    return ("PASS" if ok else "FAIL"), why
+
+def cmd_run(args):
+    for p in (RUST_EPS, RUST_GEN, SLEPC["real"], SLEPC["complex"]):
+        if not os.path.exists(p):
+            sys.exit("missing %s (see the setup lines at the top of this file)" % p)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w") as f:
+        for c in SUITES[args.suite]:
+            r = run_case(c)
+            r["verdict"], r["detail"] = judge(r)
+            f.write(json.dumps(r) + "\n")
+            f.flush()
+            print("%-4s %-34s %s" % (r["verdict"], c["name"], r["detail"]), flush=True)
+
+def cmd_report(args):
+    rows = [json.loads(l) for l in open(args.file)]
+    print("| case | tier | verdict | restarts (rust/slepc) | matvecs | time rust [s] | time slepc [s] | ratio | max resid |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    for r in rows:
+        a, b = r["rust"], r["slepc"]
+        if "error" in a or "error" in b:
+            print("| %s | %s | ERROR | | | | | | |" % (r["case"], r["tier"]))
+            continue
+        ta, tb = a["total_min_s"], b["total_min_s"]
+        res = max(a["true_rel_resid"] + b["true_rel_resid"] + [0])
+        print("| %s | %s | %s | %d / %d | %d / %d | %.4g | %.4g | %.2f | %.1e |" % (
+            r["case"], r["tier"], r["verdict"], a["restarts"], b["restarts"], a["matvecs"], b["matvecs"], ta, tb, ta / tb if tb else float("nan"), res))
+    print()
+    print("ratio = rust / slepc (below 1: rust faster); both include the numeric factorisation for shift-and-invert cases is NOT guaranteed (see docs/STATUS.md, 'Timing caveats').")
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("run"); r.add_argument("--suite", default="quick", choices=sorted(SUITES)); r.add_argument("--out", required=True); r.set_defaults(fn=cmd_run)
+    p = sub.add_parser("report"); p.add_argument("file"); p.set_defaults(fn=cmd_report)
+    args = ap.parse_args(); args.fn(args)

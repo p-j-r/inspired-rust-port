@@ -81,6 +81,22 @@ pub struct EpsOptions {
     /// Vectors per block; `1` is the standard single-vector method.
     pub block_size: usize,
     pub kind: Kind,
+    /// Measure convergence on the *original* problem of a shift-and-invert transformation
+    /// `λ = σ + 1/θ`: `Some(σ)` tests `‖r‖/(|θ|·|λ|)`, the relative residual `‖Ax−λBx‖/|λ|` of
+    /// the original pencil, instead of SLEPc's `‖r‖/|θ|` (`None`, the default here so that
+    /// iteration counts can be compared with SLEPc one to one).
+    ///
+    /// The two differ a lot when `|λ| ≪ |θ|⁻¹`, e.g. a shift far below small eigenvalues:
+    /// `‖r‖/|θ| < tol` then only guarantees `‖Ax−λBx‖/|λ| < tol/|λ|`.
+    /// [`crate::problem::KrylovSchurShiftInvert`] sets this automatically.
+    pub original_shift: Option<C64>,
+    /// Replace the start block `X₀` by `Op·X₀` before orthonormalising, forcing it into the range
+    /// of the operator. SLEPc does this for generalised Hermitian problems (`EPSGetStartVector`):
+    /// it removes components in the null space of a singular `B` (infinite eigenvalues), which
+    /// otherwise pollute the Krylov space. `None` = on when a weight matrix is given and the kind
+    /// is Hermitian, off otherwise (SLEPc's rule); costs one extra operator application per
+    /// start vector.
+    pub start_in_range: Option<bool>,
     /// Seed of the pseudo-random vectors (extra start-block columns, breakdown replacements).
     pub seed: u64,
     /// Record per-restart diagnostics in [`EigenResult::history`].
@@ -98,6 +114,8 @@ impl EpsOptions {
             keep: 0.5,
             block_size: 1,
             kind,
+            original_shift: None,
+            start_in_range: None,
             seed: 0x5EED_0001,
             record_history: false,
         }
@@ -174,6 +192,8 @@ pub struct HistoryEntry {
     pub matvecs: usize,
     /// Relative error estimates of the leading Ritz pairs of the active window, in wanted order.
     pub errors: Vec<f64>,
+    /// The corresponding Ritz values (of the operator given to the solver).
+    pub ritz: Vec<C64>,
 }
 
 /// Converged eigenpairs, ordered from most to least wanted.
@@ -191,6 +211,8 @@ pub struct EigenResult<T: Scalar> {
     pub vectors: Basis<T>,
     /// Number of converged pairs (may exceed `nev`).
     pub nconv: usize,
+    /// Krylov dimension actually used (after defaults and capping).
+    pub ncv: usize,
     /// Number of restart cycles performed (SLEPc `EPSGetIterationNumber`).
     pub iterations: usize,
     /// Operator applications, counted per vector.

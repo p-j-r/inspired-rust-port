@@ -9,7 +9,7 @@
 use crate::basis::Basis;
 use crate::csr::Csr;
 use crate::direct::{Definiteness, FactorStats, ShiftInvertOperator, ShiftedFactorization, ShiftedSolver, SolverError};
-use crate::eps::{EpsError, EpsOptions, EpsReason, Kind, Timings, Which, krylov_schur};
+use crate::eps::{EpsError, EpsOptions, EpsReason, HistoryEntry, Kind, Timings, Which, krylov_schur};
 use crate::faer_glue::FaerScalar;
 use crate::linop::LinearOperator;
 use crate::scalar::{C64, Scalar};
@@ -74,11 +74,15 @@ pub struct EigenPairs<T: Scalar> {
     /// Independently recomputed relative residuals `‖Ax − λBx‖₂ / (|λ|·‖x‖₂)`.
     pub residuals: Vec<f64>,
     pub converged: bool,
+    /// Krylov dimension used.
+    pub ncv: usize,
     pub restarts: usize,
     pub matvecs: usize,
     pub breakdowns: usize,
     pub eps_timings: Timings,
     pub factor_stats: FactorStats,
+    /// Per-cycle convergence log (empty unless `opts.record_history` is set).
+    pub history: Vec<HistoryEntry>,
 }
 
 /// "Eigenpairs near a shift" interface (see module docs).
@@ -95,6 +99,11 @@ pub struct KrylovSchurShiftInvert<'p, T: FaerScalar> {
     problem: &'p EigenProblem<T>,
     solver: ShiftedFactorization<T>,
     pub opts: EpsOptions,
+    /// First start vector (e.g. the same one a reference SLEPc run uses); `None` = pseudo-random.
+    pub start: Option<Vec<T>>,
+    /// Use SLEPc's convergence test `‖r‖/|θ|` (in the transformed space) instead of the relative
+    /// residual of the original problem. Only for comparisons with SLEPc.
+    pub theta_convergence: bool,
 }
 
 impl<'p, T: FaerScalar> KrylovSchurShiftInvert<'p, T> {
@@ -112,11 +121,14 @@ impl<'p, T: FaerScalar> KrylovSchurShiftInvert<'p, T> {
             Symmetry::Hermitian => Kind::Hermitian,
             Symmetry::General => Kind::General,
         };
-        let opts = EpsOptions { which: Which::LargestMagnitude, ..match kind {
-            Kind::Hermitian => EpsOptions::hermitian(1),
-            Kind::General => EpsOptions::general(1),
-        } };
-        Ok(Self { problem, solver, opts })
+        let opts = EpsOptions {
+            which: Which::LargestMagnitude,
+            ..match kind {
+                Kind::Hermitian => EpsOptions::hermitian(1),
+                Kind::General => EpsOptions::general(1),
+            }
+        };
+        Ok(Self { problem, solver, opts, start: None, theta_convergence: false })
     }
 
     pub fn factor_stats(&self) -> FactorStats {
@@ -130,6 +142,7 @@ impl<T: FaerScalar> ShiftInvertEigenSolver<T> for KrylovSchurShiftInvert<'_, T> 
             return Err(ProblemError::InvalidArgument("a Hermitian problem needs a real shift"));
         }
         self.solver.set_shift(sigma)?;
+        let s0 = sigma.to_c64();
         let p = self.problem;
         let op = ShiftInvertOperator::new(&self.solver, p.b.as_ref());
         // The shifted operator is self-adjoint in the B inner product only for Hermitian
@@ -138,8 +151,10 @@ impl<T: FaerScalar> ShiftInvertEigenSolver<T> for KrylovSchurShiftInvert<'_, T> 
             (Symmetry::Hermitian, Some(b)) => Some(b),
             _ => None,
         };
-        let opts = EpsOptions { nev, ..self.opts.clone() };
-        let res = krylov_schur(&op, weight, None, &opts)?;
+        // Unless the caller chose otherwise, test convergence on the original problem.
+        let original_shift = self.opts.original_shift.or(if self.theta_convergence { None } else { Some(s0) });
+        let opts = EpsOptions { nev, original_shift, ..self.opts.clone() };
+        let res = krylov_schur(&op, weight, self.start.as_deref(), &opts)?;
 
         let n = p.a.nrows();
         let s = sigma.to_c64();
@@ -162,11 +177,13 @@ impl<T: FaerScalar> ShiftInvertEigenSolver<T> for KrylovSchurShiftInvert<'_, T> 
             vectors: res.vectors,
             residuals,
             converged: res.reason == EpsReason::Converged,
+            ncv: res.ncv,
             restarts: res.iterations,
             matvecs: res.matvecs,
             breakdowns: res.breakdowns,
             eps_timings: res.timings,
             factor_stats: self.solver.stats(),
+            history: res.history,
         })
     }
 }
