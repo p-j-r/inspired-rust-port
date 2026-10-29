@@ -26,6 +26,8 @@
 //! [`ShiftedFactorization`](crate::direct::ShiftedFactorization). The ordering is computed once from the
 //! union pattern; every shift repeats the (numeric + symbolic, as pivoting is dynamic) factorisation.
 
+#![allow(clippy::needless_range_loop)]
+
 use crate::csr::Csr;
 use crate::direct::{FactorStats, ShiftedSolver, SolverError, Used, assemble};
 use crate::linop::Preconditioner;
@@ -270,7 +272,7 @@ impl<T: Scalar> SparseLu<T> {
                     }
                 }
             }
-            if best == NONE || !(best_abs > 0.0) || !best_abs.is_finite() {
+            if best == NONE || best_abs <= 0.0 || !best_abs.is_finite() {
                 return Err(SolverError::Singular);
             }
             let mut piv = best;
