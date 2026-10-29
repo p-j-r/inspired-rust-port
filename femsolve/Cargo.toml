@@ -39,3 +39,7 @@ path = "src/bin/fs_gen.rs"
 [[bin]]
 name = "fs-ksp"
 path = "src/bin/fs_ksp.rs"
+
+[[bin]]
+name = "fs-contour"
+path = "src/bin/fs_contour.rs"

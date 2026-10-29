@@ -124,6 +124,66 @@ def cmd_run_ksp(args):
             f.flush()
             print("%-4s %-36s %s" % (r["verdict"], c["name"], r["detail"]), flush=True)
 
+# ---- contour-integral eigensolver (E3) vs SLEPc EPSCISS ----------------------------------
+RUST_CONTOUR = os.path.join(ROOT, "target", "release", "fs-contour")
+CISS = {"real": os.path.join(HERE, "c", "real", "slepc_ciss"), "complex": os.path.join(HERE, "c", "complex", "slepc_ciss")}
+
+def ccase(name, spec, scalar, herm, center, a, b, **kw):
+    return dict(name=name, spec=spec, scalar=scalar, herm=herm, center=center, a=a, b=b, **kw)
+
+def fe_window(n, i0, i1, aspect):
+    import math
+    ev = [6 * (1 - math.cos(k * math.pi / (n + 1))) / (2 + math.cos(k * math.pi / (n + 1))) for k in range(1, n + 1)]
+    lo, hi = (ev[i0 - 1] + ev[i0]) / 2, (ev[i1] + ev[i1 + 1]) / 2
+    return ((lo + hi) / 2, 0.0), (hi - lo) / 2, aspect * (hi - lo) / 2
+
+def _fe(n, i0, i1, aspect, **kw):
+    c, a, b = fe_window(n, i0, i1, aspect)
+    return ccase("FE 1-D n=%d, modes %d..%d" % (n, i0 + 1, i1 + 1), "fe1d:%d" % n, "real", 1, c, a, b, **kw)
+
+CONTOUR_SUITES = {
+    "contour": [
+        _fe(400, 60, 71, 0.6, nodes=32, block=16, moments=6),
+        _fe(2000, 300, 311, 0.6, nodes=32, block=16, moments=6),
+        _fe(2000, 300, 311, 0.6, nodes=64, block=16, moments=6),
+        ccase("complex pencil (absorbing layer) 3000, 17 eigenvalues", "pml2d:60:50:3.0", "complex", 0, (1.0, 0.16), 0.08, 0.05, nodes=48, block=12, moments=6),
+        ccase("complex pencil (absorbing layer) 3000, 34 eigenvalues", "pml2d:60:50:3.0", "complex", 0, (1.0, 0.16), 0.15, 0.08, nodes=48, block=12, moments=6),
+    ],
+}
+
+def run_contour_case(c):
+    d = ensure_bundle(c["spec"])
+    (cre, cim), a, b = c["center"], c["a"], c["b"]
+    rust = [RUST_CONTOUR, d, "--center-re", repr(cre), "--center-im", repr(cim), "--a", repr(a), "--b", repr(b), "--nodes", str(c["nodes"]), "--block", str(c["block"]), "--moments", str(c["moments"]), "--reps", "3"]
+    sl = [CISS[c["scalar"]], d, "-herm", str(c["herm"]), "-center_re", repr(cre), "-center_im", repr(cim), "-radius", repr(a), "-vscale", repr(b / a), "-nodes", str(c["nodes"]), "-block", str(c["block"]), "-moments", str(c["moments"]), "-reps", "3"]
+    return dict(case=c["name"], spec=c["spec"], rust=run_json(rust), slepc=run_json(sl))
+
+def judge_contour(r):
+    a, b = r["rust"], r["slepc"]
+    if "error" in a or "error" in b:
+        return "ERROR", "rust: %s | slepc: %s" % (a.get("error", "ok")[:60], b.get("error", "ok")[:60])
+    key = lambda v: (round(v[0], 9), round(v[1], 9))
+    va, vb = sorted(a["values"], key=key), sorted(b["values"], key=key)
+    same_count = len(va) == len(vb)
+    dv = max((abs(complex(*x) - complex(*y)) / max(abs(complex(*y)), 1e-300) for x, y in zip(va, vb)), default=0.0) if same_count else float("nan")
+    res = max(a["true_rel_resid"] + b["true_rel_resid"] + [0])
+    ok = same_count and dv < 1e-8 and res < 1e-8
+    return ("PASS" if ok else "FAIL"), "eigenvalues found %d/%d, max rel diff %.1e, max resid %.1e, count estimate %.1f±%.1f, time %.3g/%.3g s" % (
+        len(va), len(vb), dv, res, a["estimated_count"], a["count_stderr"], a["total_min_s"], b["total_min_s"])
+
+def cmd_run_contour(args):
+    for p in (RUST_CONTOUR, RUST_GEN, CISS["real"], CISS["complex"]):
+        if not os.path.exists(p):
+            sys.exit("missing %s (see the setup lines at the top of this file)" % p)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w") as f:
+        for c in CONTOUR_SUITES[args.suite]:
+            r = run_contour_case(c)
+            r["verdict"], r["detail"] = judge_contour(r)
+            f.write(json.dumps(r) + "\n")
+            f.flush()
+            print("%-4s %-34s %s" % (r["verdict"], c["name"], r["detail"]), flush=True)
+
 def ensure_bundle(spec):
     d = os.path.join(DATA, spec.replace(":", "_"))
     if not os.path.exists(os.path.join(d, "A.mtx")):
@@ -246,5 +306,6 @@ if __name__ == "__main__":
     r = sub.add_parser("run"); r.add_argument("--suite", default="quick", choices=sorted(SUITES)); r.add_argument("--out", required=True); r.set_defaults(fn=cmd_run)
     p = sub.add_parser("report"); p.add_argument("file"); p.set_defaults(fn=cmd_report)
     k = sub.add_parser("run-ksp", help="compare linear solvers with PETSc KSP"); k.add_argument("--suite", default="ksp", choices=sorted(KSP_SUITES)); k.add_argument("--out", required=True); k.set_defaults(fn=cmd_run_ksp)
+    q = sub.add_parser("run-contour", help="compare the contour eigensolver with SLEPc CISS"); q.add_argument("--suite", default="contour", choices=sorted(CONTOUR_SUITES)); q.add_argument("--out", required=True); q.set_defaults(fn=cmd_run_contour)
     j = sub.add_parser("rejudge", help="recompute the verdicts of a stored result file"); j.add_argument("file"); j.set_defaults(fn=cmd_rejudge)
     args = ap.parse_args(); args.fn(args)

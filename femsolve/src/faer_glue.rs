@@ -123,3 +123,51 @@ pub(crate) fn clear_upper_vector_state() {
 #[cfg(not(target_arch = "x86_64"))]
 #[inline]
 pub(crate) fn clear_upper_vector_state() {}
+
+/// Thin SVD of the `n × cols` complex matrix `data` (column-major, `n ≥ cols`): singular values in
+/// decreasing order and the left singular vectors as an `n × cols` column-major vector.
+pub(crate) fn thin_svd_c64(data: &[C64], n: usize, cols: usize) -> Result<(Vec<f64>, Vec<C64>), DenseError> {
+    assert!(data.len() >= n * cols && n >= cols);
+    if data.iter().any(|v| !v.is_finite()) {
+        return Err(DenseError::NonFinite);
+    }
+    let m = Mat::<faer::c64>::from_fn(n, cols, |i, j| data[j * n + i]);
+    let svd = m.thin_svd().map_err(|_| DenseError::NoConvergence);
+    clear_upper_vector_state();
+    let svd = svd?;
+    let s: Vec<f64> = (0..cols).map(|i| svd.S().column_vector()[i].re).collect();
+    let u = svd.U();
+    let mut out = vec![C64::ZERO; n * cols];
+    for j in 0..cols {
+        for i in 0..n {
+            out[j * n + i] = u[(i, j)];
+        }
+    }
+    Ok((s, out))
+}
+
+/// Generalised eigendecomposition `A x = λ B x` of small dense complex matrices. Eigenvalues with
+/// `β = 0` (infinite) are returned as `NaN`.
+pub(crate) fn generalized_eig_c64(a: &Dense<C64>, b: &Dense<C64>) -> Result<(Vec<C64>, Dense<C64>), DenseError> {
+    let n = a.rows();
+    assert!(a.cols() == n && b.rows() == n && b.cols() == n);
+    if n == 0 {
+        return Ok((Vec::new(), Dense::zeros(0, 0)));
+    }
+    if !a.is_finite() || !b.is_finite() {
+        return Err(DenseError::NonFinite);
+    }
+    let fa = Mat::<faer::c64>::from_fn(n, n, |i, j| a[(i, j)]);
+    let fb = Mat::<faer::c64>::from_fn(n, n, |i, j| b[(i, j)]);
+    let g = fa.generalized_eigen(&fb).map_err(|_| DenseError::NoConvergence);
+    clear_upper_vector_state();
+    let g = g?;
+    let (sa, sb, u) = (g.S_a(), g.S_b(), g.U());
+    let lam = (0..n)
+        .map(|i| {
+            let (x, y) = (sa.column_vector()[i], sb.column_vector()[i]);
+            if y.norm() == 0.0 { C64::new(f64::NAN, f64::NAN) } else { x / y }
+        })
+        .collect();
+    Ok((lam, Dense::from_fn(n, n, |i, j| u[(i, j)])))
+}

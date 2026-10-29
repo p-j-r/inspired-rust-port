@@ -8,6 +8,7 @@
 pub mod amg;
 pub mod basis;
 pub mod bundle;
+pub mod contour;
 pub mod csr;
 pub mod dense;
 pub mod direct;
