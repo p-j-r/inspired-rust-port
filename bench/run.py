@@ -37,6 +37,20 @@ def eps(problem, which, nev, **kw):
     return dict(kind="eps", problem=problem, which=which, nev=nev, **kw)
 
 SUITES = {
+    # Cases where the first full run showed Rust behind, plus a few wins as controls.
+    "recheck": (
+        [ksp("cd2d_512", "gmres", pc) for pc in ("none", "sor", "ilu")]
+        + [ksp("p2d_256", "gmres", pc) for pc in ("none", "sor", "ilu")]
+        + [ksp("spd_rand", "cg", "icc"), ksp("p3d_100", "cg", "sor", reps=2)]
+        + [eps("p2d_256x250", "largest", 4, reps=2), eps("p2d_256x250", "largest", 10, reps=2),
+           eps("spd_rand", "largest", 4, reps=2), eps("spd_rand", "largest", 10, reps=2),
+           eps("p2d_48x40", "smallest", 4, tol=1e-6, maxit=2000)]
+        + [dict(c, par=4) for c in (
+            ksp("p3d_100", "cg", "jacobi"), ksp("cd2d_512", "gmres", "none"), ksp("cd2d_512", "gmres", "jacobi"),
+            ksp("p2d_256", "gmres", "ilu"),
+            eps("p2d_256x250", "largest", 10, reps=2), eps("spd_rand", "largest", 10, reps=2))]
+        + [dict(kind="micro", problem=p) for p in ("p2d_256", "spd_rand")]
+    ),
     "quick": [
         ksp("p2d_256", "cg", "none"), ksp("p2d_256", "cg", "jacobi"), ksp("p2d_256", "cg", "icc"),
         ksp("cd2d_512", "gmres", "ilu"),
@@ -75,7 +89,7 @@ def variants(par):
 
 def command(variant, case, path, par):
     threads = par or 1
-    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", RAYON_NUM_THREADS=str(threads))
+    env = dict(os.environ, OPENBLAS_NUM_THREADS="1", OMP_NUM_THREADS="1", RSOLVERS_THREADS=str(threads))
     kind = case["kind"]
     if variant.startswith("rust"):
         exe = RUST if variant == "rust" else RUST_NATIVE

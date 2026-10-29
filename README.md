@@ -9,7 +9,7 @@ A from-scratch Rust port of a representative slice of two well-known C libraries
 | Eigensolver | SLEPc `EPSKRYLOVSCHUR` (symmetric) | `eps::krylov_schur` (Lanczos, full re-orthogonalization, thick restart, locking) |
 
 It is **not** a drop-in replacement for PETSc/SLEPc: it is sequential-memory (optionally
-multithreaded via rayon), real double precision, CSR only, and covers the solvers above.
+multithreaded), real double precision, CSR only, and covers the solvers above.
 Defaults, norms, convergence tests and restart rules deliberately follow PETSc 3.19 / SLEPc 3.19
 so that the iteration counts and eigenvalues can be compared one-to-one (they match; see
 [BENCHMARKS.md](BENCHMARKS.md)).
@@ -46,13 +46,21 @@ println!("{:?}", res.values);
 Operators and preconditioners are traits (`LinearOperator`, `Preconditioner`), so matrix-free
 operators (`FnOperator`) are inlined by the compiler.
 
-Cargo feature `parallel` enables rayon threading.
+Cargo feature `parallel` enables multithreading (no dependencies). Threads default to the
+number of cores; set `RSOLVERS_THREADS`, call `par::set_default_threads`, or scope with
+`par::with_threads(n, || ...)`. Results are identical for every thread count.
 
 ## Design notes
 
 * **Deterministic parallelism.** All reductions use fixed-size chunks combined in a fixed
-  pairwise order, so results are *bitwise identical* for any thread count.
-* **Runtime-dispatched SIMD kernels** (`src/kernels.rs`: generic / AVX2 / AVX-512). FMA is never
+  order, so results are *bitwise identical* for any thread count.
+* **A hot thread team instead of a work-stealing pool.** Solvers issue many short parallel
+  regions; waking a sleeping pool thread cost 50-150 µs on the benchmark VM, as much as the
+  work itself. `par` keeps a small team that spins ~400 µs between jobs (about 1 µs dispatch)
+  and then parks.
+* **Runtime-dispatched SIMD kernels** (`src/kernels.rs`: generic / AVX2 / AVX-512). The
+  multi-dot kernel is written with explicit intrinsics because LLVM's auto-vectorisation of it
+  is fragile (it fell back to scalar code under `-C target-cpu=native`). FMA is never
   used, so every tier is also bitwise identical (unit-tested). Override with `RSOLVERS_ISA=generic|avx2|avx512`.
 * **Fused passes.** CG with a diagonal-scaling PC does update + preconditioner + all three dot
   products in one sweep over memory; SpMV fuses `p·Ap`; Gram-Schmidt uses 4-column blocked

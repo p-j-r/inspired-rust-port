@@ -162,7 +162,6 @@ pub fn krylov_schur<A: LinearOperator + ?Sized>(
                 t[p * ld..p * ld + p + 1].fill(0.0);
                 t[p * ld + p] = w[order[c]];
                 evals[p] = w[order[c]];
-                errs[p] = errs[p];
             }
         }
         let converged_before = nconv;

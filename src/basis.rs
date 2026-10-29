@@ -113,19 +113,13 @@ impl Basis {
             let e = (s + BLOCK).min(n);
             let len = e - s;
             let mut tile = vec![0.0f64; len * ncols_q];
+            // SAFETY: read-only view of columns `first..first+nrows_q`; this block only reads
+            // its own rows `s..e` of them before writing them back below.
+            let src = unsafe {
+                std::slice::from_raw_parts(base.get().add(first * n).cast_const(), nrows_q * n)
+            };
             for jc in 0..ncols_q {
-                let out = &mut tile[jc * len..(jc + 1) * len];
-                for jr in 0..nrows_q {
-                    let qv = q[jc * ldq + jr];
-                    // SAFETY: read-only view of rows s..e of column first+jr; no other
-                    // block touches these rows.
-                    let src = unsafe {
-                        std::slice::from_raw_parts(base.get().add((first + jr) * n + s), len)
-                    };
-                    for (o, v) in out.iter_mut().zip(src) {
-                        *o += qv * v;
-                    }
-                }
+                kernels::add_cols(src, n, s, nrows_q, &q[jc * ldq..jc * ldq + nrows_q], &mut tile[jc * len..(jc + 1) * len]);
             }
             for jc in 0..ncols_q {
                 // SAFETY: rows s..e of the destination columns belong to this block only.

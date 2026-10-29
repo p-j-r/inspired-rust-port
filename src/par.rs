@@ -159,6 +159,7 @@ impl SharedMut {
     /// No two live slices obtained from the same `SharedMut` may overlap, and the original
     /// slice must not be used while they are alive.
     #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn range(&self, start: usize, end: usize) -> &mut [f64] {
         assert!(start <= end && end <= self.len);
         unsafe { std::slice::from_raw_parts_mut(self.ptr.add(start), end - start) }
