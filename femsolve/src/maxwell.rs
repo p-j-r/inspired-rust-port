@@ -56,9 +56,26 @@ fn barycentric_gradients(p: &[[f64; 3]; 4]) -> ([[f64; 3]; 4], f64) {
     ([g0, g1, g2, g3], det.abs() / 6.0)
 }
 
-/// Generates the cube problem with `n ≥ 2` cells per side.
-pub fn nedelec_cube(n: usize) -> EdgeElementCube {
-    assert!(n >= 2, "need at least 2 cells per side for interior unknowns");
+/// Conforming Kuhn tetrahedral mesh of the unit cube with the numbering shared by the edge-element and the
+/// face-element generators (so that the discrete gradient and curl act between matching dof sets).
+pub(crate) struct CubeMesh {
+    /// Vertices of every tetrahedron in increasing global node number.
+    pub tets: Vec<[usize; 4]>,
+    /// Interior edge `(a, b)`, `a < b` → dof number.
+    pub edge_id: HashMap<(usize, usize), usize>,
+    pub edges: Vec<(usize, usize)>,
+    /// Interior node → column number.
+    pub node_id: HashMap<usize, usize>,
+    /// Coordinates of the interior nodes.
+    pub coords: Vec<[f64; 3]>,
+}
+
+pub(crate) fn cube_coord(n: usize, g: usize) -> [f64; 3] {
+    let np = n + 1;
+    [(g % np) as f64 / n as f64, ((g / np) % np) as f64 / n as f64, (g / (np * np)) as f64 / n as f64]
+}
+
+pub(crate) fn cube_mesh(n: usize) -> CubeMesh {
     let np = n + 1;
     let node = |i: usize, j: usize, k: usize| i + np * (j + np * k);
     let coord =
@@ -128,6 +145,14 @@ pub fn nedelec_cube(n: usize) -> EdgeElementCube {
         }
     }
 
+    CubeMesh { tets, edge_id, edges, node_id, coords }
+}
+
+/// Generates the cube problem with `n ≥ 2` cells per side.
+pub fn nedelec_cube(n: usize) -> EdgeElementCube {
+    assert!(n >= 2, "need at least 2 cells per side for interior unknowns");
+    let CubeMesh { tets, edge_id, edges, node_id, coords } = cube_mesh(n);
+    let coord = |g: usize| cube_coord(n, g);
     // Assembly.
     let mut kt: Vec<(usize, usize, f64)> = Vec::new();
     let mut mt: Vec<(usize, usize, f64)> = Vec::new();
@@ -174,6 +199,119 @@ pub fn nedelec_cube(n: usize) -> EdgeElementCube {
     EdgeElementCube { stiffness, mass, gradient, coords, edge_vectors, n }
 }
 
+/// Matrices of the lowest-order **Raviart–Thomas** (`H(div)`, face element) space on the same mesh, with the
+/// discrete curl linking it to the edge space of [`nedelec_cube`] (same interior-edge numbering). Unknowns are the
+/// fluxes through the interior faces; a face `(a, b, c)` with `a < b < c` is oriented by `(b−a)×(c−a)`. The
+/// normal component vanishes on the boundary (boundary faces are removed).
+#[derive(Debug, Clone)]
+pub struct FaceElementCube {
+    /// `∫ div ψ_f div ψ_g` (faces × faces), singular on the curls.
+    pub div_stiffness: Csr<f64>,
+    /// `∫ ψ_f · ψ_g`.
+    pub mass: Csr<f64>,
+    /// Discrete curl, faces × interior edges: `(C e)_f` is the circulation around the boundary of `f`
+    /// (`+e_ab + e_bc − e_ac`). `C G = 0`, and `∫ curl w · curl w' = Cᵀ M C` exactly.
+    pub curl: Csr<f64>,
+    /// `Π_c`, faces × interior nodes: the flux through each face of the nodal vector field `u e_c` (P1 interpolation
+    /// averaged on the face), `(Π_c)_{f,j} = (nf)_c / 6` for the nodes `j` of face `f`, `nf = (b−a)×(c−a)`.
+    pub pi: [Csr<f64>; 3],
+    pub n: usize,
+}
+
+/// Generates the Raviart–Thomas test problem on the `n × n × n` Kuhn mesh (`n ≥ 2`).
+pub fn raviart_thomas_cube(n: usize) -> FaceElementCube {
+    assert!(n >= 2);
+    let CubeMesh { tets, edge_id, node_id, .. } = cube_mesh(n);
+    let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    // interior faces = shared by two tetrahedra
+    let mut count: HashMap<[usize; 3], u8> = HashMap::new();
+    for t in &tets {
+        for drop in 0..4 {
+            let f: Vec<usize> = (0..4).filter(|&q| q != drop).map(|q| t[q]).collect();
+            *count.entry([f[0], f[1], f[2]]).or_insert(0) += 1; // t is increasing, so f is sorted
+        }
+    }
+    let mut face_id: HashMap<[usize; 3], usize> = HashMap::new();
+    let mut faces: Vec<[usize; 3]> = Vec::new();
+    for t in &tets {
+        for drop in 0..4 {
+            let f: Vec<usize> = (0..4).filter(|&q| q != drop).map(|q| t[q]).collect();
+            let key = [f[0], f[1], f[2]];
+            if count[&key] == 2 && !face_id.contains_key(&key) {
+                face_id.insert(key, faces.len());
+                faces.push(key);
+            }
+        }
+    }
+    let nf = faces.len();
+    // a point rule exact for quadratics on a tetrahedron
+    let (qa, qb) = (0.585_410_196_624_968_5, 0.138_196_601_125_010_5);
+    let mut mt = Vec::new();
+    let mut st = Vec::new();
+    for t in &tets {
+        let x: Vec<[f64; 3]> = t.iter().map(|&g| cube_coord(n, g)).collect();
+        let vol = dot(sub(x[1], x[0]), cross(sub(x[2], x[0]), sub(x[3], x[0]))).abs() / 6.0;
+        // faces opposite vertex i, with their sign relative to the outward normal
+        let mut loc: Vec<(Option<usize>, f64)> = Vec::new();
+        for i in 0..4 {
+            let f: Vec<usize> = (0..4).filter(|&q| q != i).collect();
+            let key = [t[f[0]], t[f[1]], t[f[2]]];
+            let nrm = cross(sub(x[f[1]], x[f[0]]), sub(x[f[2]], x[f[0]]));
+            let cen = [
+                (x[f[0]][0] + x[f[1]][0] + x[f[2]][0]) / 3.0,
+                (x[f[0]][1] + x[f[1]][1] + x[f[2]][1]) / 3.0,
+                (x[f[0]][2] + x[f[1]][2] + x[f[2]][2]) / 3.0,
+            ];
+            let sgn = if dot(nrm, sub(cen, x[i])) > 0.0 { 1.0 } else { -1.0 };
+            loc.push((face_id.get(&key).copied(), sgn));
+        }
+        // Φ_i(y) = (y − x_i)/(3 vol): unit outward flux through the face opposite vertex i
+        let mut quad: Vec<([f64; 3], f64)> = Vec::new();
+        for k in 0..4 {
+            let mut bary = [qb; 4];
+            bary[k] = qa;
+            let y = [0, 1, 2].map(|c| (0..4).map(|v| bary[v] * x[v][c]).sum::<f64>());
+            quad.push((y, vol / 4.0));
+        }
+        for i in 0..4 {
+            let Some(gi) = loc[i].0 else { continue };
+            for j in 0..4 {
+                let Some(gj) = loc[j].0 else { continue };
+                let sg = loc[i].1 * loc[j].1;
+                let m: f64 = quad.iter().map(|(y, w)| w * dot(sub(*y, x[i]), sub(*y, x[j])) / (9.0 * vol * vol)).sum();
+                mt.push((gi, gj, sg * m));
+                st.push((gi, gj, sg / vol));
+            }
+        }
+    }
+    let mass = Csr::from_triplets(nf, nf, &mt).unwrap();
+    let div_stiffness = Csr::from_triplets(nf, nf, &st).unwrap();
+    let ne = edge_id.len();
+    let mut ct = Vec::new();
+    let mut pit: [Vec<(usize, usize, f64)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for (f, key) in faces.iter().enumerate() {
+        let [a, b, c] = *key;
+        for (e, sg) in [((a, b), 1.0), ((b, c), 1.0), ((a, c), -1.0)] {
+            if let Some(&id) = edge_id.get(&e) {
+                ct.push((f, id, sg));
+            }
+        }
+        let (pa, pb, pc) = (cube_coord(n, a), cube_coord(n, b), cube_coord(n, c));
+        let nrm = cross(sub(pb, pa), sub(pc, pa));
+        for g in [a, b, c] {
+            if let Some(&j) = node_id.get(&g) {
+                for (comp, pit_c) in pit.iter_mut().enumerate() {
+                    pit_c.push((f, j, nrm[comp] / 6.0));
+                }
+            }
+        }
+    }
+    let nn = node_id.len();
+    let curl = Csr::from_triplets(nf, ne, &ct).unwrap();
+    let pi = [0, 1, 2].map(|c| Csr::from_triplets(nf, nn, &pit[c]).unwrap());
+    FaceElementCube { div_stiffness, mass, curl, pi, n }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +338,26 @@ mod tests {
             let p = nedelec_cube(n);
             let kg = p.stiffness.matmul(&p.gradient);
             assert!(max_abs(&kg) < 1e-11 * max_abs(&p.stiffness), "n={n}: |K G| = {}", max_abs(&kg));
+        }
+    }
+
+    #[test]
+    fn the_face_space_completes_the_exact_sequence() {
+        for n in [2, 3, 4] {
+            let e = nedelec_cube(n);
+            let f = raviart_thomas_cube(n);
+            assert_eq!(f.curl.ncols(), e.stiffness.nrows());
+            // C G = 0
+            let cg = f.curl.matmul(&e.gradient);
+            assert!(max_abs(&cg) < 1e-13, "n={n}: |C G| = {}", max_abs(&cg));
+            // ∫ curl w·curl w' = Cᵀ M_f C  (the curl of a lowest-order Nédélec function is a Raviart–Thomas one)
+            let ctmc = f.curl.transpose().matmul(&f.mass.matmul(&f.curl));
+            let diff = Csr::axpby(1.0, &ctmc, -1.0, &e.stiffness);
+            assert!(max_abs(&diff) < 1e-11 * max_abs(&e.stiffness), "n={n}: {}", max_abs(&diff));
+            // div curl = 0
+            let dc = f.div_stiffness.matmul(&f.curl);
+            assert!(max_abs(&dc) < 1e-10 * max_abs(&f.div_stiffness), "n={n}: |D C| = {}", max_abs(&dc));
+            assert!(f.mass.is_symmetric(1e-13) && f.div_stiffness.is_symmetric(1e-13));
         }
     }
 

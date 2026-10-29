@@ -672,7 +672,7 @@ impl<T: Scalar> SpectralBox<T> {
     }
 
     /// Assembles the operator as a CSR matrix from the Kronecker structure of the element matrices
-    /// (`κ Σ_d s_d ⊗_e A_e + μ detJ W`), independently of [`apply_element`](Self::apply_element).
+    /// (`κ Σ_d s_d ⊗_e A_e + μ detJ W`), independently of the element kernel.
     pub fn assemble(&self) -> Csr<T> {
         if self.geo.is_some() {
             return self.assemble_mapped();
