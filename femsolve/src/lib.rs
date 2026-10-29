@@ -39,6 +39,7 @@ pub mod scalar;
 pub mod schwarz;
 pub mod sens;
 pub mod snes;
+pub mod sparse_lu;
 pub mod sweep;
 pub mod toar;
 pub mod ts;
