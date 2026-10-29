@@ -3,6 +3,7 @@
 
   python3 harness/run.py run    --suite quick --out harness/results/quick.jsonl
   python3 harness/run.py report harness/results/quick.jsonl
+  python3 harness/run.py run-ksp --out harness/results/ksp.jsonl     # Krylov linear solvers vs PETSc KSP
   python3 harness/run.py rejudge harness/results/quick.jsonl   # recompute verdicts after changing the rules
 
 Setup (Ubuntu 24.04):
@@ -57,6 +58,71 @@ SUITES["full"] = SUITES["quick"] + [
     # a cube: the spectrum is degenerate, so only tier B is meaningful
     case("lap3d 40 Cholesky", "lap3d:40", "real", 1, tier="B", sigma=(-0.1, 0), nev=6, definite=1, reps=3),
 ]
+
+# ---- linear solvers (KSP) ---------------------------------------------------------------
+RUST_KSP = os.path.join(ROOT, "target", "release", "fs-ksp")
+PETSC_KSP = {"real": os.path.join(HERE, "c", "real", "petsc_ksp"), "complex": os.path.join(HERE, "c", "complex", "petsc_ksp")}
+
+def kcase(name, spec, scalar, solver, pc="none", **opts):
+    return dict(name=name, spec=spec, scalar=scalar, solver=solver, pc=pc, opts=opts)
+
+# PETSc's COCG applies a real-part sign test that is wrong for complex symmetric matrices (it stops
+# at iteration 2 on every complex symmetric problem tried), so COCG is compared on real SPD matrices
+# (identical algorithm) and checked against a dense solve in tests/ksp.rs for the complex case.
+KSP_SUITES = {
+    "ksp": [
+        kcase("CG complex build, real SPD", "lap2d:100:100", "complex", "cg", "jacobi"),
+        kcase("COCG complex build, real SPD", "lap2d:100:100", "complex", "cocg", "jacobi"),
+        kcase("GMRES(30) real nonsymmetric", "convdiff2d:200:200:5:3", "real", "gmres"),
+        kcase("GMRES(30) right PC", "convdiff2d:200:200:5:3", "real", "gmres", "jacobi", side="right"),
+        kcase("GMRES(30) MGS", "convdiff2d:200:200:5:3", "real", "gmres", "jacobi", orth="mgs"),
+        kcase("FGMRES(30)", "convdiff2d:200:200:5:3", "real", "fgmres", "jacobi"),
+        kcase("GMRES(60) complex symmetric", "helm2d:150:150:3.0:0.4", "complex", "gmres", "none", restart=60),
+        kcase("GMRES(40) complex symmetric Jacobi", "helm2d:150:150:3.0:0.4", "complex", "gmres", "jacobi", restart=40),
+        kcase("GMRES(40) right PC, complex", "helm2d:150:150:3.0:0.4", "complex", "gmres", "jacobi", restart=40, side="right"),
+        kcase("FGMRES(40) complex", "helm2d:150:150:3.0:0.4", "complex", "fgmres", "jacobi", restart=40),
+        kcase("GMRES(40) CGS+refinement, complex", "helm2d:150:150:3.0:0.4", "complex", "gmres", "jacobi", restart=40, orth="cgs-refine"),
+    ],
+}
+
+def run_ksp_case(c):
+    d = ensure_bundle(c["spec"])
+    rust = [RUST_KSP, d, "--solver", c["solver"], "--pc", c["pc"], "--rtol", "1e-8", "--reps", "3"]
+    petsc = [PETSC_KSP[c["scalar"]], d, "-ksp_kind", c["solver"], "-pc", c["pc"], "-rtol", "1e-8", "-reps", "3"]
+    for k, v in c["opts"].items():
+        rust += ["--" + k, str(v)]
+        petsc += ["-" + k, str(v)]
+    return dict(case=c["name"], spec=c["spec"], solver=c["solver"], scalar=c["scalar"], rust=run_json(rust), petsc=run_json(petsc))
+
+def judge_ksp(r):
+    a, b = r["rust"], r["petsc"]
+    if "error" in a or "error" in b:
+        return "ERROR", "rust: %s | petsc: %s" % (a.get("error", "ok")[:60], b.get("error", "ok")[:60])
+    ha, hb = a["history"], b["history"]
+    # PETSc's FGMRES logs the restart residual twice per cycle (the second copy is the recomputed
+    # value, equal to ~1e-12); collapse such repeats on both sides.
+    if r["solver"] == "fgmres":
+        def collapse(h):
+            return [v for i, v in enumerate(h) if i == 0 or abs(v - h[i - 1]) > 1e-9 * abs(h[i - 1])]
+        ha, hb = collapse(ha), collapse(hb)
+    n = min(len(ha), len(hb))
+    dh = max((abs(x - y) / max(abs(y), 1e-300) for x, y in zip(ha[:n], hb[:n])), default=float("nan"))
+    ok = a["iterations"] == b["iterations"] and dh < 1e-4 and a["true_rel_resid"] < 1e-6
+    return ("PASS" if ok else "FAIL"), "iterations %d/%d, max history diff %.1e, true resid %.1e/%.1e, time %.3g/%.3g s" % (
+        a["iterations"], b["iterations"], dh, a["true_rel_resid"], b["true_rel_resid"], a["solve_min_s"], b["solve_min_s"])
+
+def cmd_run_ksp(args):
+    for p in (RUST_KSP, RUST_GEN, PETSC_KSP["real"], PETSC_KSP["complex"]):
+        if not os.path.exists(p):
+            sys.exit("missing %s (see the setup lines at the top of this file)" % p)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w") as f:
+        for c in KSP_SUITES[args.suite]:
+            r = run_ksp_case(c)
+            r["verdict"], r["detail"] = judge_ksp(r)
+            f.write(json.dumps(r) + "\n")
+            f.flush()
+            print("%-4s %-36s %s" % (r["verdict"], c["name"], r["detail"]), flush=True)
 
 def ensure_bundle(spec):
     d = os.path.join(DATA, spec.replace(":", "_"))
@@ -179,5 +245,6 @@ if __name__ == "__main__":
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run"); r.add_argument("--suite", default="quick", choices=sorted(SUITES)); r.add_argument("--out", required=True); r.set_defaults(fn=cmd_run)
     p = sub.add_parser("report"); p.add_argument("file"); p.set_defaults(fn=cmd_report)
+    k = sub.add_parser("run-ksp", help="compare linear solvers with PETSc KSP"); k.add_argument("--suite", default="ksp", choices=sorted(KSP_SUITES)); k.add_argument("--out", required=True); k.set_defaults(fn=cmd_run_ksp)
     j = sub.add_parser("rejudge", help="recompute the verdicts of a stored result file"); j.add_argument("file"); j.set_defaults(fn=cmd_rejudge)
     args = ap.parse_args(); args.fn(args)

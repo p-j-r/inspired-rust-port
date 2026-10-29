@@ -5,6 +5,8 @@
 //!   fe1d:n                                 real symmetric, A x = λ M x (exact FE spectrum)
 //!   gauge1d:n:phi                          complex Hermitian (gauge-transformed Laplacian)
 //!   pml1d:n:gamma                          complex symmetric, A = L + iγI
+//!   helm2d:nx:ny:k2:sigma                  complex symmetric Helmholtz-like: L − k² + iσ·ramp(x,y)
+//!   convdiff2d:nx:ny:bx:by                 real non-symmetric convection–diffusion (upwind)
 //!   pml2d:nx:ny:smax                       complex symmetric pencil A x = λ B x with an absorbing
 //!                                          layer (B = diag(1 − iσ(x,y))), complex eigenvalues
 
@@ -76,6 +78,47 @@ fn main() {
             let (n, g): (usize, f64) = (num(&parts, 1), num(&parts, 2));
             let a = Csr::axpby(C64::ONE, &laplacian_1d(n).to_complex(), C64::new(0.0, g), &Csr::identity(n));
             finish(Bundle::new(a, None), &args[1], dir, 6, (0.5, 0.0));
+        }
+        "helm2d" => {
+            let (nx, ny, k2, sg): (usize, usize, f64, f64) =
+                (num(&parts, 1), num(&parts, 2), num(&parts, 3), num(&parts, 4));
+            let t: Vec<_> = (0..nx * ny)
+                .map(|p| {
+                    let (i, j) = (p % nx, p / nx);
+                    let ramp = 1.0 + 0.5 * (i as f64 / nx as f64) + 0.25 * (j as f64 / ny as f64);
+                    (p, p, C64::new(-k2, sg * ramp))
+                })
+                .collect();
+            let d = Csr::from_triplets(nx * ny, nx * ny, &t).unwrap();
+            let a = Csr::axpby(C64::ONE, &laplacian_2d(nx, ny).to_complex(), C64::ONE, &d);
+            finish(Bundle::new(a, None), &args[1], dir, 4, (0.0, 0.0));
+        }
+        "convdiff2d" => {
+            let (nx, ny, bx, by): (usize, usize, f64, f64) =
+                (num(&parts, 1), num(&parts, 2), num(&parts, 3), num(&parts, 4));
+            // First-order upwind convection with cell Péclet numbers bx, by (as in rsolvers).
+            let (wx, ex, dx) = (-(1.0 + bx.max(0.0)), -(1.0 + (-bx).max(0.0)), bx.abs());
+            let (sy, ny_, dy) = (-(1.0 + by.max(0.0)), -(1.0 + (-by).max(0.0)), by.abs());
+            let mut t = Vec::new();
+            for j in 0..ny {
+                for i in 0..nx {
+                    let p = i + nx * j;
+                    if j > 0 {
+                        t.push((p, p - nx, sy));
+                    }
+                    if i > 0 {
+                        t.push((p, p - 1, wx));
+                    }
+                    t.push((p, p, 4.0 + dx + dy));
+                    if i + 1 < nx {
+                        t.push((p, p + 1, ex));
+                    }
+                    if j + 1 < ny {
+                        t.push((p, p + nx, ny_));
+                    }
+                }
+            }
+            finish(Bundle::new(Csr::from_triplets(nx * ny, nx * ny, &t).unwrap(), None), &args[1], dir, 4, (0.0, 0.0));
         }
         "pml2d" => {
             let (nx, ny, smax): (usize, usize, f64) = (num(&parts, 1), num(&parts, 2), num(&parts, 3));

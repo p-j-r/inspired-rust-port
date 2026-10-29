@@ -69,6 +69,19 @@ impl<T: Scalar> Basis<T> {
         (BasisView { n, data: head }, tail)
     }
 
+    /// Column `a` shared and column `b` mutable (`a != b`).
+    pub fn col_pair_mut(&mut self, a: usize, b: usize) -> (&[T], &mut [T]) {
+        assert_ne!(a, b);
+        let n = self.n;
+        if a < b {
+            let (lo, hi) = self.data.split_at_mut(b * n);
+            (&lo[a * n..(a + 1) * n], &mut hi[..n])
+        } else {
+            let (lo, hi) = self.data.split_at_mut(a * n);
+            (&hi[..n], &mut lo[b * n..(b + 1) * n])
+        }
+    }
+
     /// Copies column `from` over column `to`.
     pub fn copy_col(&mut self, from: usize, to: usize) {
         if from != to {

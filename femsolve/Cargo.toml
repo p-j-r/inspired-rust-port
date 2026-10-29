@@ -35,3 +35,7 @@ path = "src/bin/fs_eps.rs"
 [[bin]]
 name = "fs-gen"
 path = "src/bin/fs_gen.rs"
+
+[[bin]]
+name = "fs-ksp"
+path = "src/bin/fs_ksp.rs"

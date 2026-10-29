@@ -95,3 +95,74 @@ mod tests {
         check::<C64>();
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// Fused kernels for the Krylov linear solvers
+// ---------------------------------------------------------------------------------------
+
+/// `y ← x + β·y` (PETSc `VecAYPX`).
+pub fn aypx<T: Scalar>(beta: T, x: &[T], y: &mut [T]) {
+    assert_eq!(x.len(), y.len());
+    let par = par::worth_parallel(x.len());
+    par::for_chunks_mut(y, CHUNK, par, |c, yc| {
+        let xs = &x[c * CHUNK..c * CHUNK + yc.len()];
+        for (yi, xi) in yc.iter_mut().zip(xs) {
+            *yi = *xi + beta * *yi;
+        }
+    });
+}
+
+/// `(xᴴy or xᵀy, ‖x‖²)` in one pass.
+pub fn dot_and_norm_sq<T: Scalar>(x: &[T], y: &[T], conjugate: bool) -> (T, f64) {
+    assert_eq!(x.len(), y.len());
+    let parts = par::chunk_map(x.len().div_ceil(CHUNK), par::worth_parallel(x.len()), |c| {
+        let (s, e) = (c * CHUNK, ((c + 1) * CHUNK).min(x.len()));
+        let d = if conjugate { T::k_dotc(&x[s..e], &y[s..e]) } else { T::k_dotu(&x[s..e], &y[s..e]) };
+        (d, T::k_dotc(&x[s..e], &x[s..e]).re())
+    });
+    parts.into_iter().fold((T::ZERO, 0.0), |a, b| (a.0 + b.0, a.1 + b.1))
+}
+
+/// One fused pass of the (preconditioned) CG update, for the identity (`diag = None`, `z`
+/// untouched) or a diagonal preconditioner (`diag = Some(d)`, `z = d ⊙ r`):
+/// `x += αp; r −= αw; z = d ⊙ r`, returning `(zᴴr or zᵀr, ‖z‖², ‖r‖²)` of the new vectors.
+#[allow(clippy::too_many_arguments)]
+pub fn cg_update<T: Scalar>(
+    alpha: T,
+    p: &[T],
+    x: &mut [T],
+    w: &[T],
+    r: &mut [T],
+    z: &mut [T],
+    diag: Option<&[T]>,
+    conjugate: bool,
+) -> (T, f64, f64) {
+    let n = x.len();
+    assert!(
+        p.len() == n && w.len() == n && r.len() == n && (diag.is_none() || (z.len() == n && diag.unwrap().len() == n))
+    );
+    let (xs, rs, zs) =
+        (par::RawCols::new(x, n, 1), par::RawCols::new(r, n, 1), par::RawCols::new(z, n, usize::from(diag.is_some())));
+    let parts = par::chunk_map(n.div_ceil(CHUNK), par::worth_parallel(n), |c| {
+        let (s, e) = (c * CHUNK, ((c + 1) * CHUNK).min(n));
+        // SAFETY: chunk `c` owns rows s..e of x, r and z, which nothing else touches.
+        let (xc, rc) = unsafe { (xs.rows(0, s, e), rs.rows(0, s, e)) };
+        T::k_axpy(alpha, &p[s..e], xc);
+        T::k_axpy(-alpha, &w[s..e], rc);
+        match diag {
+            Some(d) => {
+                let zc = unsafe { zs.rows(0, s, e) };
+                for ((zi, di), ri) in zc.iter_mut().zip(&d[s..e]).zip(rc.iter()) {
+                    *zi = *di * *ri;
+                }
+                let zr = if conjugate { T::k_dotc(zc, rc) } else { T::k_dotu(zc, rc) };
+                (zr, T::k_dotc(zc, zc).re(), T::k_dotc(rc, rc).re())
+            }
+            None => {
+                let rr = T::k_dotc(rc, rc).re();
+                (if conjugate { T::from_f64(rr) } else { T::k_dotu(rc, rc) }, rr, rr)
+            }
+        }
+    });
+    parts.into_iter().fold((T::ZERO, 0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2))
+}
