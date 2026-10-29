@@ -26,6 +26,7 @@ pub mod pc;
 pub mod problem;
 pub mod rng;
 pub mod scalar;
+pub mod ts;
 pub mod vecops;
 
 pub use csr::Csr;

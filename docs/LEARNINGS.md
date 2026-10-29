@@ -205,3 +205,26 @@ With `--features parallel` the same kernels reach 20–40 GB/s effective on 4 vC
   infinite/zero-eigenvalue cluster; a Cholesky reduction plus Hermitian EVD took milliseconds. Tests use the latter;
   `faer_glue::generalized_eig_c64` is only used for the tiny projected problems.
 * The Kuhn mesh is not symmetric under axis permutations: the triple 2π² mode splits by about 8 % at 3 cells per side.
+
+## 15. Time stepping (T1)  (measured)
+
+* BDF in the quasi-constant-step (backward-difference) form needs only two small matrices `R`, `U` to change the
+  step; the unit tests (factor 1 is the identity; a cubic polynomial history is reproduced on a new grid) catch
+  every indexing slip. Written from the Shampine–Reichelt paper; no library code was read.
+* A *linear* problem needs no Newton iteration: `(K + M/c) d = f − K y_pred − Mψ/c` is solved exactly, and a
+  numeric factorisation is only needed when `c = h/γ_order` changes. The controller changes `h` or the order at most
+  once per `order + 1` steps, so a run of 141 steps used 16–25 factorisations (one symbolic analysis).
+* Mostly order 5 is selected on smooth heat problems (118 of 141 steps).
+* **Reusing a stale factorisation by refinement does not pay** at ±30 % on `c`: 3-D heat, 64 000 unknowns: 26 → 17
+  factorisations (−8.5 s) but the refinement solves cost more than that (34.4 s → 37.2 s). The option exists
+  (`BdfOptions::reuse_tolerance`, default off); it would only win when one factorisation costs ≫ 30 solves.
+* Per-step error control gives *global* error ∝ tol^(p/(p+1)): ROS2 (p = 2) reached 4e-3, 1.9e-4, 8.7e-6 for
+  rtol 1e-3, 1e-5, 1e-7 on the logistic problem, i.e. much more than the tolerance at the loose end. BDF5 stayed within
+  0.5–5 × rtol. Use tighter tolerances for the low-order Rosenbrock method (the port list warns about inaccurate default tolerances:
+  all tolerances are mandatory arguments here).
+* Generalised-α with ρ∞ = 0.3 reduces the energy of the highest (ωh ≈ 10) mode by > 1e4 over 20 steps; average-acceleration
+  Newmark keeps it, as it must; both are second order.
+* Factorisation time dominates time stepping in 2-D (2.4 of 3.6 s) and absolutely in 3-D (1 s each); the 3-D Cholesky of the
+  unit cube takes 1 s vs 50 ms per solve, as in item 8.
+* `FactorStats::solves` is not updated by `solve_block_in_place(&self)` (shared reference), so per-solve counters and
+  times read zero; use wall time minus factorisation time.
