@@ -169,7 +169,7 @@ impl<T: FaerScalar> Preconditioner<T> for Amg<T> {
 }
 
 /// One Gauss–Seidel sweep (`forward` or backward) for `A x = b`, in place on `x`.
-fn gauss_seidel<T: Scalar>(a: &Csr<T>, inv_diag: &[T], b: &[T], x: &mut [T], forward: bool) {
+pub(crate) fn gauss_seidel<T: Scalar>(a: &Csr<T>, inv_diag: &[T], b: &[T], x: &mut [T], forward: bool) {
     let n = a.nrows();
     let mut sweep = |i: usize| {
         let (cols, vals) = a.row(i);

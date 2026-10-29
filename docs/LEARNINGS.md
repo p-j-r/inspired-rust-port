@@ -183,3 +183,25 @@ With `--features parallel` the same kernels reach 20–40 GB/s effective on 4 vC
   nearest `nev`. If the nearest set is required use Krylov–Schur shift-and-invert or the contour solver.
 * Complex symmetric (non-Hermitian) standard problems: locking must keep a Schur factor (`T`), eigenvectors
   are recovered from its triangular eigenvectors.
+
+## 14. AMS and the Nédélec test generator (P1)  (measured)
+
+* The gradient correction is what matters: at `A = K + 1e-4·M` (gradient kernel almost exact) AMS-PCG needs 10 iterations,
+  Jacobi 1078, none 1187; at `β = 1` AMS needs 12–13 iterations on 4³–12³ cells, Jacobi 145 → 682.
+* **The cycle must be symmetric for COCG.** Applying the three `Π_c` corrections one after another
+  (multiplicatively, x then y then z) made the operator slightly non-symmetric: real CG still converged (11
+  iterations) but COCG stagnated at 1e-6 relative. Computing the three corrections from the *same* residual
+  (additive, i.e. the block-diagonal vector Laplacian) restores symmetry and costs 2 extra iterations (13).
+* The interpolation `Π` needs the *edge vectors*, not only the gradient and interior-node coordinates: under PEC an
+  end node of an edge may be removed, and its coordinate is then not recoverable from `G`. `Ams::new` takes
+  `edge_vectors` explicitly (the generator provides them; nyx must export them with `G`).
+* Solving `K − τM` (indefinite) with AMS built for `K + τM` works for JD with **standard** extraction (3 modes near
+  2π² in 33 outer iterations, no factorisation). With **harmonic** extraction JD stalls in the gradient null space
+  (θ ≈ 1e-15, relative residual `‖r‖/|θ|` meaningless there): the preconditioner amplifies exactly the null-space components
+  and the search space never contains the cavity modes. JD now (a) drops linearly dependent columns on restart instead
+  of dividing by zero (this was a `NonFinite` error), (b) confirms the locked set with *recomputed* true
+  residuals and reports `converged = false` otherwise (before this it could report garbage as converged).
+* Faer's complex generalised eigensolver (`generalized_eigen`) takes minutes for ~300 × 300 pencils with a large
+  infinite/zero-eigenvalue cluster; a Cholesky reduction plus Hermitian EVD took milliseconds. Tests use the latter;
+  `faer_glue::generalized_eig_c64` is only used for the tiny projected problems.
+* The Kuhn mesh is not symmetric under axis permutations: the triple 2π² mode splits by about 8 % at 3 cells per side.

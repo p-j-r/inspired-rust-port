@@ -305,6 +305,30 @@ pub fn jacobi_davidson(
         }
     }
 
+    // Replaces the (empty) search space by one random vector, orthogonal to the locked set.
+    macro_rules! reseed {
+        ($salt:expr) => {{
+            let mut t = random_vector::<C64>(n, opts.seed.wrapping_add(1_000_003 * $salt as u64));
+            let mut bt = vec![C64::ZERO; n];
+            bmul(&t, &mut bt);
+            let nrm = orth(&mut t, &mut bt, &v, &bv, 0, &xq, &bxq, lam.len());
+            scale_real(1.0 / nrm, &mut t);
+            scale_real(1.0 / nrm, &mut bt);
+            v.col_mut(0).copy_from_slice(&t);
+            bv.col_mut(0).copy_from_slice(&bt);
+            let mut w = vec![C64::ZERO; n];
+            a.spmv(&t, &mut w);
+            matvecs += 1;
+            if !opts.hermitian && !lam.is_empty() {
+                let mut h = vec![C64::ZERO; lam.len()];
+                xq.view().dots_block(lam.len(), &w, 1, &mut h, None);
+                xq.view().sub_combination(lam.len(), &h, &mut w);
+            }
+            av.col_mut(0).copy_from_slice(&w);
+            m = 1;
+        }};
+    }
+
     let mut inner = Gmres::<C64>::new(GmresOptions {
         tol: Tolerances { rtol: opts.inner_tol, max_it: opts.inner_its, ..Default::default() },
         restart: opts.inner_its,
@@ -391,7 +415,7 @@ pub fn jacobi_davidson(
             // Restart from the remaining Ritz vectors (the locked direction is dropped).
             let keep: Vec<usize> =
                 order.iter().copied().skip(1).take(opts.m_min.min(m.saturating_sub(1)).max(1)).collect();
-            restart(
+            m = restart(
                 &mut v,
                 &mut av,
                 &mut bv,
@@ -400,7 +424,10 @@ pub fn jacobi_davidson(
                 &cvecs,
                 &Locked { x: &xq, bx: &bxq, lam: &lam, hermitian: opts.hermitian },
             );
-            m = keep.len();
+            if m == 0 {
+                // Everything kept was dependent on the locked set: start over from a random vector.
+                reseed!(it);
+            }
             rebuild(&mut ha, &mut hb, &mut gaa, &mut gab, &mut gbb, &v, &av, &bv, m, opts.harmonic);
             continue;
         }
@@ -408,7 +435,7 @@ pub fn jacobi_davidson(
         // ---- Restart if the search space is full.
         if m >= mmax {
             let keep: Vec<usize> = order.iter().copied().take(opts.m_min).collect();
-            restart(
+            m = restart(
                 &mut v,
                 &mut av,
                 &mut bv,
@@ -417,7 +444,10 @@ pub fn jacobi_davidson(
                 &cvecs,
                 &Locked { x: &xq, bx: &bxq, lam: &lam, hermitian: opts.hermitian },
             );
-            m = keep.len();
+            if m == 0 {
+                // Everything kept was dependent on the locked set: start over from a random vector.
+                reseed!(it);
+            }
             rebuild(&mut ha, &mut hb, &mut gaa, &mut gab, &mut gbb, &v, &av, &bv, m, opts.harmonic);
             // After restarting the previous best vector is span-contained; fall through to expand.
         }
@@ -530,8 +560,11 @@ pub fn jacobi_davidson(
         residuals.push(r2.sqrt() / (l.norm().max(1e-300) * norm2(x)));
     }
     let _ = norm2_sq(&ax);
+    // Safety net: the locked set was accepted on the *recurrence* residual (`A V` is updated, not
+    // recomputed), so confirm it with the true residuals computed above.
+    let verified = residuals.iter().all(|&x| x <= 100.0 * opts.tol);
     Ok(JdResult {
-        converged: converged_all,
+        converged: converged_all && verified,
         values,
         vectors,
         residuals,
@@ -570,7 +603,7 @@ fn restart(
     keep: &[usize],
     cvecs: &Dense<C64>,
     locked: &Locked,
-) {
+) -> usize {
     let mk = keep.len();
     let ld = m;
     let q: Vec<C64> = keep.iter().flat_map(|&i| cvecs.col(i).to_vec()).collect();
@@ -578,7 +611,9 @@ fn restart(
     av.mult_in_place(0, m, mk, &q, ld);
     bv.mult_in_place(0, m, mk, &q, ld);
     // Modified Gram–Schmidt on the new columns with the inner product ⟨x,y⟩ = xᴴ(B y) = xᴴ·bv_y.
+    let mut out = 0usize; // columns kept so far; nearly dependent ones are dropped
     for j in 0..mk {
+        let before = dotc(v.col(j), bv.col(j)).re.max(0.0).sqrt();
         for _ in 0..2 {
             // Keep the basis B-orthogonal to the locked vectors: harmonic (and non-normal) Ritz
             // vectors are not orthogonal to the pair that was just locked. The image of the
@@ -597,7 +632,7 @@ fn restart(
                     }
                 }
             }
-            for i in 0..j {
+            for i in 0..out {
                 let h = dotc(v.col(i), bv.col(j));
                 let (vi, vj) = (v.col(i).to_vec(), v.col_mut(j));
                 for (a, b) in vj.iter_mut().zip(&vi) {
@@ -614,10 +649,21 @@ fn restart(
             }
         }
         let nrm = dotc(v.col(j), bv.col(j)).re.max(0.0).sqrt();
-        for basis in [&mut *v, &mut *av, &mut *bv] {
-            scale_real(1.0 / nrm, basis.col_mut(j));
+        if !nrm.is_finite() || nrm <= 1e-10 * before.max(1e-300) {
+            continue; // linearly dependent on the columns already kept
         }
+        if out != j {
+            for basis in [&mut *v, &mut *av, &mut *bv] {
+                let src = basis.col(j).to_vec();
+                basis.col_mut(out).copy_from_slice(&src);
+            }
+        }
+        for basis in [&mut *v, &mut *av, &mut *bv] {
+            scale_real(1.0 / nrm, basis.col_mut(out));
+        }
+        out += 1;
     }
+    out
 }
 
 #[allow(clippy::too_many_arguments)]

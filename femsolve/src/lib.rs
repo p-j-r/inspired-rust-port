@@ -6,6 +6,7 @@
 //! SLEPc. See `docs/STATUS.md` for what is done, what was measured and what is still open.
 
 pub mod amg;
+pub mod ams;
 pub mod basis;
 pub mod bundle;
 pub mod contour;
@@ -18,6 +19,7 @@ pub mod jd;
 pub mod kernels;
 pub mod ksp;
 pub mod linop;
+pub mod maxwell;
 pub mod mm;
 pub mod par;
 pub mod pc;
