@@ -7,6 +7,8 @@
 //! * [`Minres`]: Hermitian *indefinite* systems with an SPD preconditioner; [`Bicgstab`]: short-recurrence
 //!   solver for general (also complex) systems, right-preconditioned.
 //! * [`Cocr`]: conjugate residuals for complex *symmetric* systems (smoother than COCG); [`Idrs`]: IDR(s).
+//! * [`Qmr`]: quasi-minimal residual (smooth BiCG, two products per iteration, or one for complex
+//!   symmetric systems); [`GcroDr`]: GMRES with Krylov-subspace recycling for sequences of systems.
 //! * [`Gmres`]: restarted GMRES(m) with left or right preconditioning and the flexible variant
 //!   (FGMRES, needed when the preconditioner changes from step to step, e.g. inner iterations or
 //!   AMG with different cycles).
@@ -19,16 +21,20 @@
 mod bicgstab;
 mod cg;
 mod cocr;
+mod gcrodr;
 mod gmres;
 mod idrs;
 mod minres;
+mod qmr;
 
 pub use bicgstab::{Bicgstab, BicgstabOptions};
 pub use cg::{Cg, CgKind, CgNorm, CgOptions};
 pub use cocr::{Cocr, CocrOptions};
+pub use gcrodr::{GcroDr, GcroDrOptions, GcroDrStats};
 pub use gmres::{Gmres, GmresOptions, Orthogonalization, PcSide};
 pub use idrs::{Idrs, IdrsOptions};
 pub use minres::{Minres, MinresOptions};
+pub use qmr::{Qmr, QmrOptions};
 
 use crate::scalar::Scalar;
 
