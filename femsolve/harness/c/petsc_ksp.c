@@ -13,7 +13,7 @@ int main(int argc, char **argv)
   PC          pc;
   PetscReal   rtol = 1e-5, rn, bn, *hist;
   PetscInt    maxit = 10000, restart = 30, reps = 3, n, nnz, its, i, nh;
-  double     *times, t0;
+  double     *times, t0, setup = 0;
   MatInfo     minfo;
   KSPConvergedReason reason;
 
@@ -65,10 +65,13 @@ int main(int argc, char **argv)
   PetscCall(KSPSetTolerances(ksp, rtol, 1e-50, 1e4, maxit));
   PetscCall(KSPSetInitialGuessNonzero(ksp, PETSC_FALSE));
   PetscCall(KSPGetPC(ksp, &pc));
-  PetscCall(PCSetType(pc, !strcmp(pcn, "jacobi") ? PCJACOBI : PCNONE));
+  PetscCall(PCSetType(pc, !strcmp(pcn, "jacobi") ? PCJACOBI : !strcmp(pcn, "amg") ? PCGAMG : PCNONE));
   PetscCall(PetscMalloc1(maxit + 10, &hist));
   PetscCall(KSPSetResidualHistory(ksp, hist, maxit + 10, PETSC_TRUE));
+  t0 = MPI_Wtime();
   PetscCall(KSPSetUp(ksp));
+  PetscCall(PCSetUp(pc));
+  setup = MPI_Wtime() - t0;
   PetscCall(PetscMalloc1(reps, &times));
   PetscCall(VecZeroEntries(x));
   PetscCall(KSPSolve(ksp, b, x)); /* warm-up */
@@ -88,14 +91,14 @@ int main(int argc, char **argv)
   PetscCall(VecNorm(b, NORM_2, &bn));
   qsort(times, reps, sizeof(double), cmp_double);
   PetscCall(PetscPrintf(PETSC_COMM_WORLD,
-    "{\"impl\":\"petsc\",\"kind\":\"ksp\",\"n\":%d,\"nnz\":%d,\"scalar\":\"%s\",\"solver\":\"%s\",\"iterations\":%d,\"reason\":\"%s\",\"solve_min_s\":%.17e,\"true_rel_resid\":%.17e,\"history\":[",
+    "{\"impl\":\"petsc\",\"kind\":\"ksp\",\"n\":%d,\"nnz\":%d,\"scalar\":\"%s\",\"solver\":\"%s\",\"iterations\":%d,\"reason\":\"%s\",\"setup_s\":%.17e,\"solve_min_s\":%.17e,\"true_rel_resid\":%.17e,\"history\":[",
     (int)n, (int)nnz,
 #if defined(PETSC_USE_COMPLEX)
     "complex",
 #else
     "real",
 #endif
-    solver, (int)its, KSPConvergedReasons[reason], times[0], (double)(rn / bn)));
+    solver, (int)its, KSPConvergedReasons[reason], setup, times[0], (double)(rn / bn)));
   for (i = 0; i < nh; i++) PetscCall(PetscPrintf(PETSC_COMM_WORLD, "%s%.17e", i ? "," : "", (double)hist[i]));
   PetscCall(PetscPrintf(PETSC_COMM_WORLD, "]}\n"));
   PetscCall(PetscFree(hist));

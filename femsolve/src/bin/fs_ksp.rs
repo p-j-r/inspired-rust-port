@@ -2,22 +2,23 @@
 //! method and prints one JSON line in the same schema as the PETSc driver
 //! (`harness/c/petsc_ksp.c`).
 //!
-//!   --solver cg|cocg|gmres|fgmres [cocg]   --pc none|jacobi [none]   --rtol 1e-5   --maxit 10000
+//!   --solver cg|cocg|gmres|fgmres [cocg]   --pc none|jacobi|amg [none]   (amg: --hermitian 1 for R = Pᴴ)   --rtol 1e-5   --maxit 10000
 //!   --restart 30   --side left|right [left]   --orth cgs|mgs|cgs-refine [cgs]   --norm pc|unpc|natural [pc]
 //!   --reps 3   --petsc-sign-test 1 (reproduce PETSc's COCG breakdown test, for parity runs)
 
+use femsolve::amg::{Amg, AmgOptions};
 use femsolve::bundle::{Bundle, read_meta};
 use femsolve::ksp::{
     Cg, CgKind, CgNorm, CgOptions, Gmres, GmresOptions, Orthogonalization, PcSide, SolveInfo, Tolerances,
 };
 use femsolve::linop::{Identity, Preconditioner};
 use femsolve::pc::Jacobi;
-use femsolve::{C64, Csr, Scalar};
+use femsolve::{C64, Csr};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
-fn run<T: Scalar>(dir: &str, kv: &HashMap<String, String>) {
+fn run<T: femsolve::faer_glue::FaerScalar>(dir: &str, kv: &HashMap<String, String>) {
     let bun = Bundle::<T>::read(Path::new(dir)).expect("read bundle");
     let a = &bun.a;
     let b = bun.v0.clone().expect("bundle needs v0.mtx as the right-hand side");
@@ -31,7 +32,21 @@ fn run<T: Scalar>(dir: &str, kv: &HashMap<String, String>) {
     let solver = get("solver", "cocg");
     let jac = Jacobi::new(a);
     let id = Identity;
-    let pc: &dyn Preconditioner<T> = if get("pc", "none") == "jacobi" { &jac } else { &id };
+    let t_setup = Instant::now();
+    let amg = if get("pc", "none") == "amg" {
+        Some(
+            Amg::new(a, AmgOptions { hermitian: kv.contains_key("hermitian"), ..Default::default() })
+                .expect("amg setup"),
+        )
+    } else {
+        None
+    };
+    let setup_s = t_setup.elapsed().as_secs_f64();
+    let pc: &dyn Preconditioner<T> = match (get("pc", "none").as_str(), &amg) {
+        ("jacobi", _) => &jac,
+        ("amg", Some(m)) => m,
+        _ => &id,
+    };
     let norm = match get("norm", "pc").as_str() {
         "unpc" => CgNorm::Unpreconditioned,
         "natural" => CgNorm::Natural,
@@ -86,7 +101,7 @@ fn run<T: Scalar>(dir: &str, kv: &HashMap<String, String>) {
     let bn: f64 = b.iter().map(|v| v.modulus_sq()).sum::<f64>().sqrt();
     let hist: Vec<String> = info.history.iter().map(|v| format!("{v:.17e}")).collect();
     println!(
-        "{{\"impl\":\"femsolve\",\"kind\":\"ksp\",\"n\":{n},\"nnz\":{},\"scalar\":\"{}\",\"solver\":\"{solver}\",\"iterations\":{},\"reason\":\"{:?}\",\"solve_min_s\":{best:.6e},\"true_rel_resid\":{:.17e},\"history\":[{}]}}",
+        "{{\"impl\":\"femsolve\",\"kind\":\"ksp\",\"n\":{n},\"nnz\":{},\"scalar\":\"{}\",\"solver\":\"{solver}\",\"iterations\":{},\"reason\":\"{:?}\",\"setup_s\":{setup_s:.6e},\"solve_min_s\":{best:.6e},\"true_rel_resid\":{:.17e},\"history\":[{}]}}",
         a.nnz(),
         if T::IS_COMPLEX { "complex" } else { "real" },
         info.iterations,

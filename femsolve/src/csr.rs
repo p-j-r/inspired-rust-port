@@ -254,6 +254,42 @@ impl<T: Scalar> Csr<T> {
         Csr { nrows: a.nrows, ncols: a.ncols, indptr, indices, values }
     }
 
+    /// Sparse matrix product `self · other` (Gustavson's row-by-row algorithm); the result has
+    /// sorted columns. Used for Galerkin coarse operators `Pᵀ A P`.
+    pub fn matmul(&self, other: &Csr<T>) -> Csr<T> {
+        assert_eq!(self.ncols, other.nrows, "inner dimensions differ");
+        let n = other.ncols;
+        let mut marker = vec![usize::MAX; n];
+        let mut acc = vec![T::ZERO; n];
+        let mut indptr = Vec::with_capacity(self.nrows + 1);
+        let (mut indices, mut values) = (Vec::new(), Vec::new());
+        indptr.push(0);
+        let mut cols: Vec<u32> = Vec::new();
+        for i in 0..self.nrows {
+            cols.clear();
+            let (ca, va) = self.row(i);
+            for (&k, &a) in ca.iter().zip(va) {
+                let (cb, vb) = other.row(k as usize);
+                for (&j, &b) in cb.iter().zip(vb) {
+                    if marker[j as usize] != i {
+                        marker[j as usize] = i;
+                        acc[j as usize] = a * b;
+                        cols.push(j);
+                    } else {
+                        acc[j as usize] += a * b;
+                    }
+                }
+            }
+            cols.sort_unstable();
+            for &j in &cols {
+                indices.push(j);
+                values.push(acc[j as usize]);
+            }
+            indptr.push(indices.len());
+        }
+        Csr { nrows: self.nrows, ncols: n, indptr, indices, values }
+    }
+
     /// Entry-wise map to another scalar type (e.g. widening a real matrix to complex).
     pub fn map<U: Scalar>(&self, f: impl Fn(T) -> U) -> Csr<U> {
         Csr {
@@ -295,6 +331,20 @@ impl<T: Scalar> Csr<T> {
         assert_eq!(y.len(), self.nrows);
         let par = par::worth_parallel(self.nnz());
         par::for_chunks_mut(y, CHUNK, par, |c, yc| self.rows_into(c * CHUNK, x, yc));
+    }
+
+    /// `y ← y + A x`.
+    pub fn spmv_acc(&self, x: &[T], y: &mut [T]) {
+        assert_eq!(x.len(), self.ncols);
+        assert_eq!(y.len(), self.nrows);
+        for (i, yi) in y.iter_mut().enumerate() {
+            let (c, v) = self.row(i);
+            let mut s = T::ZERO;
+            for (&j, &a) in c.iter().zip(v) {
+                s += a * x[j as usize];
+            }
+            *yi += s;
+        }
     }
 
     /// `y ← A x`, returning `xᴴ y` (square matrices) with the reduction fused into the product
@@ -454,6 +504,21 @@ mod tests {
         assert_eq!(c.nnz(), a.nnz());
         assert_eq!(c.diagonal()[3], C64::new(2.0, 1.0));
         assert_eq!(a.transpose(), a);
+    }
+
+    #[test]
+    fn matmul_matches_dense() {
+        let a = Csr::axpby(C64::ONE, &laplacian_2d(7, 6).to_complex(), C64::new(0.0, 0.5), &Csr::identity(42));
+        let b = laplacian_2d(7, 6).to_complex().transpose();
+        let c = a.matmul(&b);
+        assert!(c.has_sorted_unique_rows());
+        let (da, db, dc) = (a.to_dense(), b.to_dense(), c.to_dense());
+        for i in 0..42 {
+            for j in 0..42 {
+                let want = (0..42).fold(C64::ZERO, |s, k| s + da[i * 42 + k] * db[k * 42 + j]);
+                assert!((dc[i * 42 + j] - want).norm() < 1e-12);
+            }
+        }
     }
 
     #[test]

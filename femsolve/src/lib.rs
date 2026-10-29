@@ -5,6 +5,7 @@
 //! factorisation reuse, Matrix Market export of problems, and a harness to compare against
 //! SLEPc. See `docs/STATUS.md` for what is done, what was measured and what is still open.
 
+pub mod amg;
 pub mod basis;
 pub mod bundle;
 pub mod csr;

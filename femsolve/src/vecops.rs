@@ -69,33 +69,6 @@ pub fn scale_real<T: Scalar>(r: f64, y: &mut [T]) {
     });
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::rng::random_vector;
-    use crate::scalar::C64;
-
-    fn check<T: Scalar>() {
-        let n = 3 * CHUNK + 17;
-        let (x, y) = (random_vector::<T>(n, 1), random_vector::<T>(n, 2));
-        let want = x.iter().zip(&y).fold(T::ZERO, |a, (p, q)| a + p.conj() * *q);
-        assert!((dotc(&x, &y) - want).modulus() < 1e-10);
-        let nrm = norm2(&x);
-        assert!((nrm * nrm - x.iter().map(|v| v.modulus_sq()).sum::<f64>()).abs() < 1e-8);
-        let mut z = y.clone();
-        axpy(T::from_parts(0.5, -0.25), &x, &mut z);
-        for i in (0..n).step_by(509) {
-            assert!((z[i] - (y[i] + T::from_parts(0.5, -0.25) * x[i])).modulus() < 1e-14);
-        }
-    }
-
-    #[test]
-    fn real_and_complex() {
-        check::<f64>();
-        check::<C64>();
-    }
-}
-
 // ---------------------------------------------------------------------------------------
 // Fused kernels for the Krylov linear solvers
 // ---------------------------------------------------------------------------------------
@@ -165,4 +138,31 @@ pub fn cg_update<T: Scalar>(
         }
     });
     parts.into_iter().fold((T::ZERO, 0.0, 0.0), |a, b| (a.0 + b.0, a.1 + b.1, a.2 + b.2))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rng::random_vector;
+    use crate::scalar::C64;
+
+    fn check<T: Scalar>() {
+        let n = 3 * CHUNK + 17;
+        let (x, y) = (random_vector::<T>(n, 1), random_vector::<T>(n, 2));
+        let want = x.iter().zip(&y).fold(T::ZERO, |a, (p, q)| a + p.conj() * *q);
+        assert!((dotc(&x, &y) - want).modulus() < 1e-10);
+        let nrm = norm2(&x);
+        assert!((nrm * nrm - x.iter().map(|v| v.modulus_sq()).sum::<f64>()).abs() < 1e-8);
+        let mut z = y.clone();
+        axpy(T::from_parts(0.5, -0.25), &x, &mut z);
+        for i in (0..n).step_by(509) {
+            assert!((z[i] - (y[i] + T::from_parts(0.5, -0.25) * x[i])).modulus() < 1e-14);
+        }
+    }
+
+    #[test]
+    fn real_and_complex() {
+        check::<f64>();
+        check::<C64>();
+    }
 }

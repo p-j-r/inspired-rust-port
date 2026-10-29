@@ -332,9 +332,9 @@ fn orthogonalize<T: Scalar>(v: &mut Basis<T>, k: usize, kind: Orthogonalization,
             after
         }
         Orthogonalization::ModifiedGramSchmidt => {
-            for j in 0..=k {
+            for (j, hj) in h.iter_mut().enumerate().take(k + 1) {
                 let c = vecops::dotc(head.col(j), w);
-                h[j] = c;
+                *hj = c;
                 vecops::axpy(-c, head.col(j), w);
             }
             vecops::norm2(w)
