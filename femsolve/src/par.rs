@@ -47,6 +47,23 @@ where
     }
 }
 
+/// Applies `f` to every item, in parallel when `parallel`. The items are independent (typically disjoint
+/// `&mut` slices of one output), so the result does not depend on the thread count.
+pub fn for_each_mut<X, F>(items: &mut [X], parallel: bool, f: F)
+where
+    X: Send,
+    F: Fn(&mut X) + Sync + Send,
+{
+    #[cfg(feature = "parallel")]
+    if parallel && items.len() > 1 {
+        use rayon::prelude::*;
+        items.par_iter_mut().for_each(f);
+        return;
+    }
+    let _ = parallel;
+    items.iter_mut().for_each(f);
+}
+
 /// Whether a kernel touching `elems` scalars should run in parallel.
 #[inline]
 pub fn worth_parallel(elems: usize) -> bool {

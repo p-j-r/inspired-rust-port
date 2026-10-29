@@ -87,3 +87,19 @@ fn reductions_are_bitwise_independent_of_thread_count() {
     assert_eq!(s1, s4);
     assert_eq!(y1, y4);
 }
+
+#[test]
+fn matrix_free_operator_is_bitwise_independent_of_thread_count() {
+    use femsolve::matfree::{Boundary, SpectralBox};
+    // 14³ elements of degree 4: 57³ = 185 193 nodes, above the parallel threshold
+    let op = SpectralBox::<f64>::uniform(4, &[14, 14, 14], &[0.1, 0.1, 0.1], 1.0, -3.0, Boundary::Dirichlet);
+    let x = femsolve::rng::random_vector::<f64>(op.len(), 3);
+    let run = || {
+        let mut y = vec![0.0; op.len()];
+        op.apply(&x, &mut y);
+        y
+    };
+    let one = in_pool(1, run);
+    let four = in_pool(4, run);
+    assert!(one == four, "matrix-free product differs between thread counts");
+}

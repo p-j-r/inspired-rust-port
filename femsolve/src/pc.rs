@@ -13,7 +13,12 @@ pub struct Jacobi<T: Scalar> {
 
 impl<T: Scalar> Jacobi<T> {
     pub fn new(a: &Csr<T>) -> Self {
-        Self { inv: a.diagonal().into_iter().map(|d| if d == T::ZERO { T::ONE } else { T::ONE / d }).collect() }
+        Self::from_diagonal(a.diagonal())
+    }
+
+    /// From the diagonal alone, for operators that are never assembled (see [`crate::matfree`]).
+    pub fn from_diagonal(diag: Vec<T>) -> Self {
+        Self { inv: diag.into_iter().map(|d| if d == T::ZERO { T::ONE } else { T::ONE / d }).collect() }
     }
 }
 
