@@ -8,7 +8,7 @@ measured, and [`../docs/NYX_INTEGRATION.md`](../docs/NYX_INTEGRATION.md) for how
 | Module | What |
 |---|---|
 | `eps` | thick-restart **Krylov–Schur** with locking: Hermitian (real symmetric, complex Hermitian, B-weighted) and general complex (complex symmetric PML pencils), block size ≥ 1, DGKS refinement, breakdown handling, per-phase timers, per-cycle history |
-| `direct` | `(A − σB)⁻¹` by sparse Cholesky/LU with **symbolic reuse** across shifts, Cholesky→LU fallback, explicit thread policy |
+| `direct`, `ordering` | `(A − σB)⁻¹` by sparse Cholesky/LU with **symbolic reuse** across shifts, Cholesky→LU fallback, explicit thread policy, nested-dissection or AMD ordering chosen per matrix |
 | `problem` | the interface models use: `ShiftInvertEigenSolver::solve_near(σ, nev)`, with independently recomputed residuals |
 | `mm`, `bundle`, `bin/fs-gen`, `bin/fs-eps` | Matrix Market export/import, problem bundles, CLIs |
 | `linop` | `LinearOperator` / `Preconditioner` traits with fusion hooks (`apply_dotc`, `apply_block`, `apply_block_with_bx`) |

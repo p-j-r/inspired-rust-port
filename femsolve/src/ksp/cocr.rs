@@ -34,11 +34,24 @@ impl<T: Scalar> Cocr<T> {
         Self { opts, _p: Default::default() }
     }
 
-    pub fn solve<A: LinearOperator<T> + ?Sized, M: Preconditioner<T> + ?Sized>(&mut self, a: &A, m: &M, b: &[T], x: &mut [T]) -> SolveInfo {
+    pub fn solve<A: LinearOperator<T> + ?Sized, M: Preconditioner<T> + ?Sized>(
+        &mut self,
+        a: &A,
+        m: &M,
+        b: &[T],
+        x: &mut [T],
+    ) -> SolveInfo {
         let n = a.dim();
         assert!(b.len() == n && x.len() == n, "dimension mismatch");
         x.fill(T::ZERO);
-        let mut info = SolveInfo { iterations: 0, reason: ConvergedReason::DivergedIts, residual_norm: 0.0, history: Vec::new(), matvecs: 0, pc_applies: 0 };
+        let mut info = SolveInfo {
+            iterations: 0,
+            reason: ConvergedReason::DivergedIts,
+            residual_norm: 0.0,
+            history: Vec::new(),
+            matvecs: 0,
+            pc_applies: 0,
+        };
         let mut conv = ConvTest::new(self.opts.tol);
         let mut z = vec![T::ZERO; n];
         m.apply(b, &mut z);

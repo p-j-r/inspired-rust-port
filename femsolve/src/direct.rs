@@ -17,9 +17,11 @@
 use crate::csr::Csr;
 use crate::faer_glue::{FaerScalar, clear_upper_vector_state};
 use crate::linop::LinearOperator;
+use crate::ordering::{FillOrdering, adjacency_from_lower, nested_dissection};
 use crate::scalar::Scalar;
 use faer::dyn_stack::{MemBuffer, MemStack};
-use faer::sparse::linalg::cholesky::{LltRef, SymbolicCholesky, factorize_symbolic_cholesky};
+use faer::perm::PermRef;
+use faer::sparse::linalg::cholesky::{LltRef, SymbolicCholesky, SymmetricOrdering, factorize_symbolic_cholesky};
 use faer::sparse::linalg::lu::{LuRef, NumericLu, SymbolicLu, factorize_symbolic_lu};
 use faer::sparse::{SparseColMatRef, SymbolicSparseColMatRef};
 use faer::{Conj, MatMut, Par, Side};
@@ -129,6 +131,8 @@ pub struct FactorStats {
     pub cholesky_fallbacks: usize,
     /// Right-hand sides solved.
     pub solves: usize,
+    /// Stored entries of the factor (`L` for Cholesky) once a Cholesky factorisation has been analysed; 0 before.
+    pub factor_nnz: usize,
     pub solve_secs_total: f64,
 }
 
@@ -230,6 +234,8 @@ pub struct ShiftedFactorization<T: FaerScalar> {
     have: Used,
     /// Thread policy for factorisation and solves (see [`ThreadPolicy`]).
     pub threads: ThreadPolicy,
+    /// Fill-reducing ordering of the Cholesky path; set before the first factorisation.
+    pub ordering: FillOrdering,
     stats: FactorStats,
 }
 
@@ -254,6 +260,7 @@ impl<T: FaerScalar> ShiftedFactorization<T> {
             llt_vals: Vec::new(),
             have: Used::None,
             threads: ThreadPolicy::default(),
+            ordering: FillOrdering::default(),
             stats: FactorStats {
                 analyse_secs: t0.elapsed().as_secs_f64(),
                 symbolic_count: 0,
@@ -264,6 +271,7 @@ impl<T: FaerScalar> ShiftedFactorization<T> {
                 used: Used::None,
                 cholesky_fallbacks: 0,
                 solves: 0,
+                factor_nnz: 0,
                 solve_secs_total: 0.0,
             },
         })
@@ -301,13 +309,42 @@ impl<T: FaerScalar> ShiftedFactorization<T> {
         let lower = self.lower.as_ref().expect("lower pattern exists for PositiveDefinite");
         if self.sym_llt.is_none() {
             let t0 = Instant::now();
-            let sym = factorize_symbolic_cholesky(
-                Self::pattern(lower, n),
-                Side::Lower,
-                Default::default(),
-                Default::default(),
-            )
+            let pattern = Self::pattern(lower, n);
+            let amd = || factorize_symbolic_cholesky(pattern, Side::Lower, SymmetricOrdering::Amd, Default::default());
+            let nd = |perm: &(Vec<u32>, Vec<u32>)| {
+                factorize_symbolic_cholesky(
+                    pattern,
+                    Side::Lower,
+                    SymmetricOrdering::Custom(PermRef::new_checked(&perm.0, &perm.1, n)),
+                    Default::default(),
+                )
+            };
+            let make_perm = || {
+                let adj = adjacency_from_lower(n, &lower.col_ptr, &lower.row_idx);
+                let order = nested_dissection(&adj, 100);
+                let fwd: Vec<u32> = order.iter().map(|&o| o as u32).collect();
+                let mut inv = vec![0u32; n];
+                for (new, &old) in order.iter().enumerate() {
+                    inv[old] = new as u32;
+                }
+                (fwd, inv)
+            };
+            let sym = match self.ordering {
+                FillOrdering::Amd => amd(),
+                FillOrdering::NestedDissection => nd(&make_perm()),
+                FillOrdering::Auto => {
+                    // only worth trying for graphs with enough fill to matter
+                    let a = amd().map_err(|_| SolverError::OutOfMemory)?;
+                    if a.len_val() < 20 * n.max(1) {
+                        Ok(a)
+                    } else {
+                        let b = nd(&make_perm()).map_err(|_| SolverError::OutOfMemory)?;
+                        Ok(if b.len_val() < a.len_val() { b } else { a })
+                    }
+                }
+            }
             .map_err(|_| SolverError::OutOfMemory)?;
+            self.stats.factor_nnz = sym.len_val();
             self.llt_vals = vec![<T::Elem as faer::traits::ComplexField>::zero_impl(); sym.len_val()];
             self.sym_llt = Some(sym);
             self.stats.analyse_secs += t0.elapsed().as_secs_f64();

@@ -36,12 +36,25 @@ impl<T: Scalar> Idrs<T> {
         Self { opts, _p: Default::default() }
     }
 
-    pub fn solve<A: LinearOperator<T> + ?Sized, M: Preconditioner<T> + ?Sized>(&mut self, a: &A, m: &M, b: &[T], x: &mut [T]) -> SolveInfo {
+    pub fn solve<A: LinearOperator<T> + ?Sized, M: Preconditioner<T> + ?Sized>(
+        &mut self,
+        a: &A,
+        m: &M,
+        b: &[T],
+        x: &mut [T],
+    ) -> SolveInfo {
         let n = a.dim();
         let s = self.opts.s.max(1).min(n);
         assert!(b.len() == n && x.len() == n, "dimension mismatch");
         x.fill(T::ZERO);
-        let mut info = SolveInfo { iterations: 0, reason: ConvergedReason::DivergedIts, residual_norm: 0.0, history: Vec::new(), matvecs: 0, pc_applies: 0 };
+        let mut info = SolveInfo {
+            iterations: 0,
+            reason: ConvergedReason::DivergedIts,
+            residual_norm: 0.0,
+            history: Vec::new(),
+            matvecs: 0,
+            pc_applies: 0,
+        };
         let mut conv = ConvTest::new(self.opts.tol);
         let mut r = b.to_vec();
         let rn0 = norm2(&r);
@@ -69,8 +82,8 @@ impl<T: Scalar> Idrs<T> {
         let mut g: Vec<Vec<T>> = vec![vec![T::ZERO; n]; s];
         let mut u: Vec<Vec<T>> = vec![vec![T::ZERO; n]; s];
         let mut mm = vec![vec![T::ZERO; s]; s];
-        for i in 0..s {
-            mm[i][i] = T::ONE;
+        for (i, row) in mm.iter_mut().enumerate() {
+            row[i] = T::ONE;
         }
         let mut omega = T::ONE;
         let mut f: Vec<T> = p.iter().map(|pi| dotc(pi, &r)).collect();

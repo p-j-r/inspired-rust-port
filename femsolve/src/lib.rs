@@ -30,6 +30,7 @@ pub mod mixed;
 pub mod mm;
 pub mod nep;
 pub mod opt;
+pub mod ordering;
 pub mod par;
 pub mod pc;
 pub mod problem;

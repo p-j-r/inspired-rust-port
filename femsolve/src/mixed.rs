@@ -121,6 +121,7 @@ impl<T: LowPrecision> MixedPrecisionLu<T> {
                 used: Used::None,
                 cholesky_fallbacks: 0,
                 solves: 0,
+                factor_nnz: 0,
                 solve_secs_total: 0.0,
             },
         })

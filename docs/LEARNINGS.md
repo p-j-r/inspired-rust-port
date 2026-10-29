@@ -356,3 +356,14 @@ With `--features parallel` the same kernels reach 20–40 GB/s effective on 4 vC
   and the fallback factorises in double precision on first need; inside a 30-solve shift-and-invert run one solve needed the fallback.
 * A double LU has residual `~ ε‖A‖‖x‖/‖b‖`; for κ = 1e9 that is 4e-7, so "residual below 1e-8" is not a valid acceptance test there: compare against the double-precision residual instead.
 * `faer` accepts `f32` and `Complex<f32>` in the low-level sparse LU through the same generic calls, with no changes besides the element type (the `FaerScalar` bound `Real = f64` only concerns the wrapper types here).
+
+## 24. Fill-reducing ordering (S2)  (measured, contradicts the port list's expectation)
+
+The list expected "little" from nested dissection ("MUMPS with METIS was not faster than faer"). For faer's *Cholesky* with a deliberately simple nested dissection
+(BFS level sets, no refinement) the result on a 3-D grid is large: 30 % fewer factor non-zeros (26.5 M → 18.7 M, 40³) and a 2.4× faster sequential numeric factorisation (1.40 → 0.58 s). On 2-D grids it is
+*worse* than AMD (+40 % non-zeros), so the ordering is chosen per matrix (`FillOrdering::Auto`, both symbolic analyses cost 0.15–0.3 s).
+* faer's **parallel** numeric Cholesky with the ND ordering (0.91 s on 4 vCPUs) was *slower* than the sequential one (0.58 s), while with AMD parallel helped (1.06 vs 1.40 s). Combined with item 1 (parallel solves) this is the third case where
+  faer's parallel sparse kernels need measuring before use; the best combination here was ND + sequential factorisation, 1.8× faster than the old default (AMD + shared pool, 1.06 s).
+* The end-to-end 3-D eigensolve moved little (4.7 → 4.6 s cold): solves dominate (item 8); they became ≈ 10 % cheaper with the smaller factor.
+* `SymmetricOrdering::Identity` aborts inside faer 0.24.4 (`ereach` index overflow) for the lower-triangle patterns used here; only `Amd` and `Custom` are usable.
+* faer's sparse **LU** takes no user ordering (COLAMD only): the complex symmetric PML matrices cannot use this. A symmetric-pattern ND with a Cholesky-like LDLᵀ (no pivoting) would be the route, with the risk of unstable pivots for indefinite complex symmetric matrices.
