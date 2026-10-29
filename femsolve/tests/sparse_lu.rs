@@ -63,7 +63,7 @@ fn pivoting_handles_zero_diagonals_and_nonsymmetric_patterns() {
         }
     }
     let a = Csr::from_triplets(n, n, &t).unwrap();
-    assert!(a.diagonal().iter().any(|d| *d == 0.0));
+    assert!(a.diagonal().contains(&0.0));
     let b = random_vector::<f64>(n, 3);
     for tol in [1.0, 0.1, 0.001] {
         for ordering in [LuOrdering::Natural, LuOrdering::Amd] {

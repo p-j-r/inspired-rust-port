@@ -25,6 +25,7 @@ pub mod kernels;
 pub mod ksp;
 pub mod linop;
 pub mod lobpcg;
+pub mod lowrank;
 pub mod maxwell;
 pub mod mixed;
 pub mod mm;
