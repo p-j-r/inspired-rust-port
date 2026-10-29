@@ -240,3 +240,109 @@ fn operator_fusion_hooks_are_exercised_and_exact() {
     assert_eq!(du, femsolve::vecops::dotu(&x, &y2));
     assert_eq!(y1, y2);
 }
+
+// ---- MINRES and BiCGStab ------------------------------------------------------------------
+
+#[test]
+fn minres_solves_an_indefinite_symmetric_system_where_cg_breaks_down() {
+    use femsolve::ksp::{Minres, MinresOptions};
+    let n = 40 * 40;
+    let a = Csr::axpby(1.0, &laplacian_2d(40, 40), -0.3, &Csr::identity(n)); // eigenvalues of L both sides of 0.3
+    let b = random_vector::<f64>(n, 7);
+    let mut x = vec![0.0; n];
+    let tol = Tolerances { rtol: 1e-9, max_it: 5000, ..Default::default() };
+    let info = Minres::new(MinresOptions { tol, record_history: true }).solve(&a, &Identity, &b, &mut x);
+    assert!(info.reason.is_converged(), "{:?} after {}", info.reason, info.iterations);
+    let mut ax = vec![0.0; n];
+    a.spmv(&x, &mut ax);
+    assert!(ax.iter().zip(&b).map(|(p, q)| (p - q).powi(2)).sum::<f64>().sqrt() < 1e-7 * norm(&b));
+    // the monitored residual norm is non-increasing
+    assert!(info.history.windows(2).all(|w| w[1] <= w[0] * (1.0 + 1e-12)));
+    // plain CG on the same indefinite matrix does not converge to the tolerance within the same budget
+    let mut x2 = vec![0.0; n];
+    let cg = Cg::new(CgOptions { tol, ..Default::default() }).solve(&a, &Identity, &b, &mut x2);
+    assert!(!cg.reason.is_converged(), "CG unexpectedly converged on an indefinite matrix");
+}
+
+#[test]
+fn minres_with_an_spd_preconditioner_on_a_hermitian_complex_matrix() {
+    use femsolve::ksp::{Minres, MinresOptions};
+    // gauge-transformed Laplacian minus a shift: complex Hermitian indefinite
+    let n = 30 * 30;
+    let mut t = Vec::new();
+    for p in 0..n {
+        t.push((p, p, C64::new(4.0 - 1.0, 0.0)));
+        if p % 30 != 0 {
+            t.push((p, p - 1, C64::new(0.0, 0.4).exp().scale(-1.0)));
+        }
+        if p % 30 != 29 {
+            t.push((p, p + 1, C64::new(0.0, -0.4).exp().scale(-1.0)));
+        }
+        if p >= 30 {
+            t.push((p, p - 30, C64::new(-1.0, 0.0)));
+        }
+        if p + 30 < n {
+            t.push((p, p + 30, C64::new(-1.0, 0.0)));
+        }
+    }
+    let a = Csr::from_triplets(n, n, &t).unwrap();
+    assert!(a.is_hermitian(1e-14));
+    let b = random_vector::<C64>(n, 3);
+    let mut x = vec![C64::ZERO; n];
+    let info = Minres::new(MinresOptions {
+        tol: Tolerances { rtol: 1e-9, max_it: 3000, ..Default::default() },
+        ..Default::default()
+    })
+    .solve(&a, &Jacobi::new(&a), &b, &mut x);
+    assert!(info.reason.is_converged(), "{:?} after {}", info.reason, info.iterations);
+    let mut ax = vec![C64::ZERO; n];
+    a.spmv(&x, &mut ax);
+    assert!(ax.iter().zip(&b).map(|(p, q)| (*p - *q).norm_sqr()).sum::<f64>().sqrt() < 1e-6 * norm(&b));
+}
+
+#[test]
+fn bicgstab_solves_nonsymmetric_real_and_complex_symmetric_systems() {
+    use femsolve::ilu::Ilu;
+    use femsolve::ksp::{Bicgstab, BicgstabOptions};
+    let tol = Tolerances { rtol: 1e-9, max_it: 2000, ..Default::default() };
+    // real nonsymmetric: convection–diffusion
+    let nx = 40;
+    let h = 1.0 / (nx as f64 + 1.0);
+    let mut t = Vec::new();
+    for j in 0..nx {
+        for i in 0..nx {
+            let p = j * nx + i;
+            t.push((p, p, 4.0));
+            if i > 0 {
+                t.push((p, p - 1, -1.0 - 15.0 * h));
+            }
+            if i + 1 < nx {
+                t.push((p, p + 1, -1.0 + 15.0 * h));
+            }
+            if j > 0 {
+                t.push((p, p - nx, -1.0));
+            }
+            if j + 1 < nx {
+                t.push((p, p + nx, -1.0));
+            }
+        }
+    }
+    let a = Csr::from_triplets(nx * nx, nx * nx, &t).unwrap();
+    let b = random_vector::<f64>(nx * nx, 5);
+    let mut x = vec![0.0; nx * nx];
+    let info = Bicgstab::new(BicgstabOptions { tol, record_history: false }).solve(&a, &Ilu::ilu_k(&a, 0), &b, &mut x);
+    assert!(info.reason.is_converged(), "{:?}", info.reason);
+    let mut ax = vec![0.0; nx * nx];
+    a.spmv(&x, &mut ax);
+    assert!(ax.iter().zip(&b).map(|(p, q)| (p - q).powi(2)).sum::<f64>().sqrt() < 1e-7 * norm(&b));
+    // complex symmetric Helmholtz-like
+    let ac = helmholtz(30, 30, 2.0, 0.5);
+    let bc = random_vector::<C64>(900, 6);
+    let mut xc = vec![C64::ZERO; 900];
+    let info =
+        Bicgstab::new(BicgstabOptions { tol, record_history: false }).solve(&ac, &Ilu::ilu_k(&ac, 1), &bc, &mut xc);
+    assert!(info.reason.is_converged(), "{:?} after {}", info.reason, info.iterations);
+    let exact = direct_solution(&ac, &bc);
+    let err = xc.iter().zip(&exact).map(|(p, q)| (*p - *q).norm_sqr()).sum::<f64>().sqrt() / norm(&exact);
+    assert!(err < 1e-6, "{err}");
+}

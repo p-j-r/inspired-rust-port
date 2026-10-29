@@ -63,8 +63,10 @@ SUITES["full"] = SUITES["quick"] + [
 RUST_KSP = os.path.join(ROOT, "target", "release", "fs-ksp")
 PETSC_KSP = {"real": os.path.join(HERE, "c", "real", "petsc_ksp"), "complex": os.path.join(HERE, "c", "complex", "petsc_ksp")}
 
-def kcase(name, spec, scalar, solver, pc="none", **opts):
-    return dict(name=name, spec=spec, scalar=scalar, solver=solver, pc=pc, opts=opts)
+def kcase(name, spec, scalar, solver, pc="none", tier="A", **opts):
+    # tier "B": the iteration is chaotic in rounding (indefinite MINRES, BiCGStab without a strong PC), so only the
+    # outcome (iteration count within 5 %, true residual below tolerance) is compared, not the residual history.
+    return dict(name=name, spec=spec, scalar=scalar, solver=solver, pc=pc, tier=tier, opts=opts)
 
 # PETSc's COCG applies a real-part sign test that is wrong for complex symmetric matrices (it stops
 # at iteration 2 on every complex symmetric problem tried), so COCG is compared on real SPD matrices
@@ -92,6 +94,13 @@ KSP_SUITES = {
         kcase("GMRES(30) + ILU(0)", "convdiff2d:200:200:5:3", "real", "gmres", "ilu", levels=0),
         kcase("GMRES(30) + ILU(2)", "convdiff2d:200:200:5:3", "real", "gmres", "ilu", levels=2),
         kcase("GMRES(30) + ILU(1), complex symmetric", "helm2d:150:150:3.0:0.4", "complex", "gmres", "ilu", levels=1),
+        # MINRES / BiCGStab (K1b)
+        kcase("MINRES, indefinite real symmetric", "shift2d:100:100:0.05", "real", "minres", "jacobi", tier="B"),
+        kcase("MINRES, no preconditioner", "shift2d:100:100:0.05", "real", "minres", tier="B"),
+        kcase("MINRES + ICC(0) on SPD", "lap2d:100:100", "real", "minres", "icc", levels=0),
+        kcase("BiCGStab, convection-diffusion", "convdiff2d:200:200:5:3", "real", "bcgs", "jacobi", tier="B"),
+        kcase("BiCGStab + ILU(0)", "convdiff2d:200:200:5:3", "real", "bcgs", "ilu", levels=0),
+        kcase("BiCGStab complex symmetric + ILU(1)", "helm2d:150:150:3.0:0.4", "complex", "bcgs", "ilu", levels=1),
         # additive Schwarz (P4): contiguous blocks, exact local LU
         kcase("CG + ASM basic, 8 blocks, overlap 1", "lap2d:100:100", "real", "cg", "asm", blocks=8, overlap=1, **{"asm-type": "basic"}),
         kcase("CG + ASM basic, 8 blocks, overlap 2", "lap2d:100:100", "real", "cg", "asm", blocks=8, overlap=2, **{"asm-type": "basic"}),
@@ -107,7 +116,7 @@ def run_ksp_case(c):
     for k, v in c["opts"].items():
         rust += ["--" + k, str(v)]
         petsc += ["-" + k, str(v)]
-    return dict(case=c["name"], spec=c["spec"], solver=c["solver"], scalar=c["scalar"], rust=run_json(rust), petsc=run_json(petsc))
+    return dict(case=c["name"], spec=c["spec"], solver=c["solver"], scalar=c["scalar"], tier=c.get("tier", "A"), rust=run_json(rust), petsc=run_json(petsc))
 
 def judge_ksp(r):
     a, b = r["rust"], r["petsc"]
@@ -122,6 +131,10 @@ def judge_ksp(r):
         ha, hb = collapse(ha), collapse(hb)
     n = min(len(ha), len(hb))
     dh = max((abs(x - y) / max(abs(y), 1e-300) for x, y in zip(ha[:n], hb[:n])), default=float("nan"))
+    if r.get("tier") == "B":
+        ok = abs(a["iterations"] - b["iterations"]) <= 0.05 * b["iterations"] and a["true_rel_resid"] < 1e-6 and b["true_rel_resid"] < 1e-6
+        return ("PASS(B)" if ok else "FAIL"), "tier B: iterations %d/%d, true resid %.1e/%.1e, time %.3g/%.3g s" % (
+            a["iterations"], b["iterations"], a["true_rel_resid"], b["true_rel_resid"], a["solve_min_s"], b["solve_min_s"])
     ok = a["iterations"] == b["iterations"] and dh < 1e-4 and a["true_rel_resid"] < 1e-6
     return ("PASS" if ok else "FAIL"), "iterations %d/%d, max history diff %.1e, true resid %.1e/%.1e, time %.3g/%.3g s" % (
         a["iterations"], b["iterations"], dh, a["true_rel_resid"], b["true_rel_resid"], a["solve_min_s"], b["solve_min_s"])

@@ -6,6 +6,7 @@
 //!   gauge1d:n:phi                          complex Hermitian (gauge-transformed Laplacian)
 //!   pml1d:n:gamma                          complex symmetric, A = L + iγI
 //!   helm2d:nx:ny:k2:sigma                  complex symmetric Helmholtz-like: L − k² + iσ·ramp(x,y)
+//!   shift2d:nx:ny:sigma                    real symmetric *indefinite*: L − σ I (σ inside the spectrum)
 //!   convdiff2d:nx:ny:bx:by                 real non-symmetric convection–diffusion (upwind)
 //!   pml2d:nx:ny:smax                       complex symmetric pencil A x = λ B x with an absorbing
 //!                                          layer (B = diag(1 − iσ(x,y))), complex eigenvalues
@@ -91,6 +92,11 @@ fn main() {
                 .collect();
             let d = Csr::from_triplets(nx * ny, nx * ny, &t).unwrap();
             let a = Csr::axpby(C64::ONE, &laplacian_2d(nx, ny).to_complex(), C64::ONE, &d);
+            finish(Bundle::new(a, None), &args[1], dir, 4, (0.0, 0.0));
+        }
+        "shift2d" => {
+            let (nx, ny, sg): (usize, usize, f64) = (num(&parts, 1), num(&parts, 2), num(&parts, 3));
+            let a = Csr::axpby(1.0, &laplacian_2d(nx, ny), -sg, &Csr::identity(nx * ny));
             finish(Bundle::new(a, None), &args[1], dir, 4, (0.0, 0.0));
         }
         "convdiff2d" => {

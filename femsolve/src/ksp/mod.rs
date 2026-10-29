@@ -4,6 +4,8 @@
 //!   definite systems, [`CgKind::Symmetric`] = **COCG** (conjugate gradients with the bilinear
 //!   form `xᵀy`, no conjugation) for complex *symmetric* systems such as PML problems. PETSc's
 //!   `KSPCG` with `-ksp_cg_type symmetric` is the same algorithm.
+//! * [`Minres`]: Hermitian *indefinite* systems with an SPD preconditioner; [`Bicgstab`]: short-recurrence
+//!   solver for general (also complex) systems, right-preconditioned.
 //! * [`Gmres`]: restarted GMRES(m) with left or right preconditioning and the flexible variant
 //!   (FGMRES, needed when the preconditioner changes from step to step, e.g. inner iterations or
 //!   AMG with different cycles).
@@ -13,11 +15,15 @@
 //! every 30 iterations with left preconditioning and classical Gram–Schmidt), so iteration
 //! counts can be compared with PETSc one to one (`harness/`).
 
+mod bicgstab;
 mod cg;
 mod gmres;
+mod minres;
 
+pub use bicgstab::{Bicgstab, BicgstabOptions};
 pub use cg::{Cg, CgKind, CgNorm, CgOptions};
 pub use gmres::{Gmres, GmresOptions, Orthogonalization, PcSide};
+pub use minres::{Minres, MinresOptions};
 
 use crate::scalar::Scalar;
 

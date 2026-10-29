@@ -14,10 +14,13 @@ measured, and [`../docs/NYX_INTEGRATION.md`](../docs/NYX_INTEGRATION.md) for how
 | `linop` | `LinearOperator` / `Preconditioner` traits with fusion hooks (`apply_dotc`, `apply_block`, `apply_block_with_bx`) |
 | `basis`, `kernels`, `vecops`, `par` | deterministic, cache-blocked multi-vector kernels (fixed row chunks, ordered folds: identical bits for any thread count) |
 | `dense` | Hermitian EVD (faer), complex Schur + reordering (own code) |
-| `ksp`, `pc` | **CG / COCG / GMRES / FGMRES** (real and complex, PETSc 3.19 defaults), Jacobi preconditioner, `fs-ksp` |
+| `ksp`, `pc` | **CG / COCG / GMRES / FGMRES / MINRES / BiCGStab** (real and complex, PETSc 3.19 defaults), Jacobi preconditioner, `fs-ksp` |
 | `amg` | smoothed-aggregation **AMG** for real and complex-symmetric matrices, shifted-Laplacian helper for Helmholtz/PML |
 | `contour` | **contour-integral** eigensolver (block Sakurai–Sugiura / CIRR), `fs-contour` |
 | `jd` | **Jacobi–Davidson** with harmonic/standard extraction, locking and Schur deflation for interior eigenvalues |
+| `fieldsplit` | **field-split / Schur-complement** preconditioners for coupled problems |
+| `lobpcg`, `chebfsi` | **LOBPCG** (constraints, soft locking, complex Hermitian) and **Chebyshev-filtered subspace iteration** for many lowest modes |
+| `expm` | **matrix-exponential action** `exp(tA)v` (Krylov) and dense `expm` |
 | `sens` | **eigenvalue derivatives** (linear and nonlinear) and **mode tracking** |
 | `opt` | **L-BFGS, nonlinear CG, MMA**, adjoint gradient helper |
 | `schwarz` | **additive / restricted Schwarz** (overlap, optional coarse space, threaded local solves; iteration counts equal to PETSc's `PCASM`) |

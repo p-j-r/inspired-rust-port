@@ -328,3 +328,20 @@ With `--features parallel` the same kernels reach 20–40 GB/s effective on 4 vC
   elements stay grey without a filter or projection.
 * The adjoint gradient of the compliance needs *no second solve* for a self-adjoint problem with `g = f`; `adjoint_gradient` still does both solves on one factorisation (2 triangular solves) so
   non-self-adjoint objectives work.
+
+## 22. More Krylov solvers, field splits, matrix exponential, LOBPCG, Chebyshev filtering  (measured)
+
+* MINRES and BiCGStab reproduce PETSc's iteration counts when the problem is benign (SPD with ICC: 98/98; BiCGStab with ILU: 26/26 and 24/24).
+  On indefinite or poorly preconditioned problems the *residual history* is chaotic in rounding (788 vs 811 iterations, history differences of 78 %) while
+  the outcome (true residual 1e-8) agrees: the harness has a tier-B verdict for these.
+* With exact diagonal blocks and an exact Schur complement the preconditioned saddle-point matrix has 3 (diag), 2 (triangular) or 1 (full) distinct eigenvalues: GMRES
+  needed exactly 3/2/2/1 iterations, a cheap end-to-end check of every sign and transposition in the Schur code. "selfp" (`A11 − A10 diag(A00)⁻¹ A01`) with exact `A00` gave 12–25 iterations
+  where nothing converged in 100.
+* A stiffly coupled 3-field problem: block Gauss–Seidel halves the GMRES iterations of block Jacobi (15 vs 28); the symmetric sweep gains 2 more.
+* `expv` with 30-dimensional Krylov spaces took a single sub-step for `‖tA‖ ≲ 20` on a 400-unknown heat problem and 12 sub-steps at `t = 300` (the solution has decayed to
+  nothing; the step control still sees the full operator norm). Error 4e-15 to 1e-10 against the modal solution. A start vector inside a small invariant subspace makes the
+  test meaningless (exact at 3 Krylov vectors): tests use random vectors.
+* LOBPCG without a preconditioner on the 1-D Laplacian stalls for hundreds of iterations without being wrong; a stall test with a 30-iteration window declared failure too early, so the default window is 200.
+  The AMG-preconditioned 2-D case needs 21 iterations for 8 modes (10× fewer than unpreconditioned).
+* Chebyshev filtering cost 148 matrix products per wanted vector for the 40 lowest modes of a 2-D Laplacian (degree 20); the polynomial filter is
+  weakest on 1-D-like spectra with tiny relative gaps, where a shift-and-invert Krylov method is the better tool.

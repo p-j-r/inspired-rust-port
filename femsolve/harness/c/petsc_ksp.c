@@ -1,5 +1,5 @@
 /* PETSc KSP driver for femsolve problem bundles (same schema as `fs-ksp`).
- *   ./petsc_ksp <bundle-dir> -ksp_kind cg|cocg|gmres|fgmres -pc none|jacobi|amg|ilu|icc [-levels k] -rtol r -maxit m
+ *   ./petsc_ksp <bundle-dir> -ksp_kind cg|cocg|gmres|fgmres|minres|bcgs -pc none|jacobi|amg|ilu|icc [-levels k] -rtol r -maxit m
  *               -restart k -side left|right -orth cgs|mgs|cgs-refine -norm pc|unpc|natural -reps n
  * The right-hand side is the bundle's v0.mtx. */
 #include "common.h"
@@ -55,13 +55,17 @@ int main(int argc, char **argv)
       PetscCall(KSPGMRESSetOrthogonalization(ksp, KSPGMRESClassicalGramSchmidtOrthogonalization));
       PetscCall(KSPGMRESSetCGSRefinementType(ksp, KSP_GMRES_CGS_REFINE_IFNEEDED));
     }
+  } else if (!strcmp(solver, "minres")) {
+    PetscCall(KSPSetType(ksp, KSPMINRES));
+  } else if (!strcmp(solver, "bcgs")) {
+    PetscCall(KSPSetType(ksp, KSPBCGS));
   } else {
     PetscCall(KSPSetType(ksp, KSPFGMRES));
     PetscCall(KSPGMRESSetRestart(ksp, restart));
     PetscCall(KSPGMRESSetOrthogonalization(ksp, KSPGMRESModifiedGramSchmidtOrthogonalization));
   }
-  PetscCall(KSPSetPCSide(ksp, !strcmp(side, "right") || !strcmp(solver, "fgmres") ? PC_RIGHT : PC_LEFT));
-  PetscCall(KSPSetNormType(ksp, (!strcmp(side, "right") || !strcmp(solver, "fgmres")) && !strcmp(solver, "gmres") + !strcmp(solver, "fgmres") ? KSP_NORM_UNPRECONDITIONED : !strcmp(norm, "unpc") ? KSP_NORM_UNPRECONDITIONED : !strcmp(norm, "natural") ? KSP_NORM_NATURAL : KSP_NORM_PRECONDITIONED));
+  PetscCall(KSPSetPCSide(ksp, !strcmp(side, "right") || !strcmp(solver, "fgmres") || !strcmp(solver, "bcgs") ? PC_RIGHT : PC_LEFT));
+  PetscCall(KSPSetNormType(ksp, !strcmp(solver, "bcgs") ? KSP_NORM_UNPRECONDITIONED : (!strcmp(side, "right") || !strcmp(solver, "fgmres")) && !strcmp(solver, "gmres") + !strcmp(solver, "fgmres") ? KSP_NORM_UNPRECONDITIONED : !strcmp(norm, "unpc") ? KSP_NORM_UNPRECONDITIONED : !strcmp(norm, "natural") ? KSP_NORM_NATURAL : KSP_NORM_PRECONDITIONED));
   PetscCall(KSPSetTolerances(ksp, rtol, 1e-50, 1e4, maxit));
   PetscCall(KSPSetInitialGuessNonzero(ksp, PETSC_FALSE));
   PetscCall(KSPGetPC(ksp, &pc));

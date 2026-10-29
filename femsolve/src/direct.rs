@@ -500,3 +500,24 @@ impl<T: Scalar, S: ShiftedSolver<T>> crate::linop::Preconditioner<T> for Shifted
         self.solver.solve_block_in_place(z, 1);
     }
 }
+
+/// An owned exact solver as a [`Preconditioner`](crate::linop::Preconditioner): factorises `A` once
+/// (Cholesky if `definiteness` says so, else LU) and applies `z = A⁻¹ r`.
+pub struct DirectSolve<T: FaerScalar> {
+    fac: ShiftedFactorization<T>,
+}
+
+impl<T: FaerScalar> DirectSolve<T> {
+    pub fn new(a: &Csr<T>, definiteness: Definiteness) -> Result<Self, SolverError> {
+        let mut fac = ShiftedFactorization::new(a, None, definiteness)?;
+        fac.set_shift(T::ZERO)?;
+        Ok(Self { fac })
+    }
+}
+
+impl<T: FaerScalar> crate::linop::Preconditioner<T> for DirectSolve<T> {
+    fn apply(&self, r: &[T], z: &mut [T]) {
+        z.copy_from_slice(r);
+        self.fac.solve_block_in_place(z, 1);
+    }
+}
