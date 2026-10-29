@@ -174,6 +174,7 @@ fn nleigs_handles_the_pole_of_a_dispersive_medium() {
     assert_same_sets(&r.values, &want, 1e-8);
     assert!(r.residuals.iter().all(|&x| x < 1e-10), "{:?}", r.residuals);
     assert!(r.interpolation_error < 1e-9);
+    println!("drude: degree {}, interpolation error {:.1e}, max residual {:.1e}", r.degree, r.interpolation_error, r.residuals.iter().cloned().fold(0.0, f64::max));
 }
 
 #[test]

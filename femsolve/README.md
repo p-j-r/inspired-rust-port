@@ -14,7 +14,7 @@ measured, and [`../docs/NYX_INTEGRATION.md`](../docs/NYX_INTEGRATION.md) for how
 | `linop` | `LinearOperator` / `Preconditioner` traits with fusion hooks (`apply_dotc`, `apply_block`, `apply_block_with_bx`) |
 | `basis`, `kernels`, `vecops`, `par` | deterministic, cache-blocked multi-vector kernels (fixed row chunks, ordered folds: identical bits for any thread count) |
 | `dense` | Hermitian EVD (faer), complex Schur + reordering (own code) |
-| `ksp`, `pc` | **CG / COCG / GMRES / FGMRES / MINRES / BiCGStab** (real and complex, PETSc 3.19 defaults), Jacobi preconditioner, `fs-ksp` |
+| `ksp`, `pc` | **CG / COCG / GMRES / FGMRES / MINRES / BiCGStab / QMR / GCRO-DR (recycling)** (real and complex, PETSc 3.19 defaults), Jacobi preconditioner, `fs-ksp` |
 | `amg` | smoothed-aggregation **AMG** for real and complex-symmetric matrices, shifted-Laplacian helper for Helmholtz/PML |
 | `contour` | **contour-integral** eigensolver (block Sakurai–Sugiura / CIRR), `fs-contour` |
 | `jd` | **Jacobi–Davidson** with harmonic/standard extraction, locking and Schur deflation for interior eigenvalues |
@@ -32,6 +32,11 @@ measured, and [`../docs/NYX_INTEGRATION.md`](../docs/NYX_INTEGRATION.md) for how
 | `nep`, `toar` | **nonlinear eigenproblems** (residual inverse iteration, Beyn contour method) and the **quadratic eigenproblem** (TOAR with compressed Krylov–Schur restart) |
 | `ts` | time steppers: variable-step **BDF 1–5**, **Newmark / generalised-α**, θ-method, **Rosenbrock ROS2** |
 | `ams`, `maxwell` | **AMS** preconditioner for lowest-order H(curl) systems (Hiptmair–Xu), and the Nédélec cube test generator |
+| `nleigs` | **NLEIGS**: rational Krylov for `T(λ)x = 0` with branch cuts and poles (Leja–Bagby interpolation, one factorisation) |
+| `ads` | **ADS** preconditioner for lowest-order H(div) systems; the Raviart–Thomas cube generator is in `maxwell` |
+| `matfree` | **matrix-free sum-factorised** spectral-element operators (box and curved geometry) |
+| `lowrank` | **ACA, HODLR** matrices and an `O(n log² n)` fast direct solver / preconditioner |
+| `sparse_lu` | **sparse LU with a user-chosen fill-reducing ordering** (natural, AMD, nested dissection, custom), real and complex |
 | `harness/` | SLEPc driver (`c/slepc_eps.c`, real and complex PETSc builds) and `run.py` comparison runner |
 
 ```rust

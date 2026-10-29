@@ -112,3 +112,10 @@ Licence rule agreed with Paul for the remaining items: read third-party sources 
 itself that the licence is MIT, Apache-2.0 or BSD (hypre: MIT/Apache-2.0 dual; PRIMME: BSD-3-Clause), and record the check
 here; never read LGPL or CeCILL code (BLOPEX, MUMPS). **Not yet checked:** nyx's own licence, and each repository above
 (do the check from the repo's `LICENSE` file first).
+
+Phase 3 (QMR, GCRO-DR, ADS, matrix-free operators, HODLR/ACA, NLEIGS, `sparse_lu`): **no third-party source code was read.** Everything
+was written from the literature: QMR: Freund & Nachtigal 1991, Freund 1992 (complex symmetric), the Templates book (Barrett et al. 1994);
+GCRO-DR: Parks, de Sturler, Mackey, Johnson & Maiti 2006; ADS: Hiptmair & Xu 2007, Kolev & Vassilevski 2012 (the `S, C, Π, C, Sᵀ` cycle
+is the standard auxiliary-space one); sum factorisation: Orszag 1980, Deville–Fischer–Mund 2002 (GLL spectral elements); ACA: Bebendorf 2000;
+HODLR solver: Ambikasaran & Darve 2013; LU: Gilbert & Peierls 1988; NLEIGS: Güttel, Van Beeumen, Meerbergen & Michiels 2014. The only external
+code called is faer's AMD ordering (`faer::sparse::linalg::amd`, MIT, already a dependency).

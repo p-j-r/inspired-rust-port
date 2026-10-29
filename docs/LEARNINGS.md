@@ -374,3 +374,62 @@ The list expected "little" from nested dissection ("MUMPS with METIS was not fas
   PETSc's `-snes_lag_jacobian 3` (Jacobian rebuilt every 3rd iteration) matches `jacobian_lag: 3`, including the iteration count (7).
 * PETSc's default `snes_stol` is 1e-8, a *convergence* test on the step; the harness sets `-snes_stol 1e-14` so that only the residual test applies.
 * Where line-search backtracking happens (arctan, x₀ = 2) both converge in 4 iterations although PETSc's `bt` uses cubic interpolation: iteration counts, not step lengths, agree.
+
+## 26. QMR and GCRO-DR (K1c)  (measured)
+
+* **QMR for complex symmetric matrices needs only one product.** In the Templates recurrences the second (left) Lanczos sequence is generated with `Aᵀ`. If `A = Aᵀ` and `M = Mᵀ`, normalising the left vectors by the *same* number as the right ones (`ξ = ρ`) makes `w̃ = ṽ`, `q = p` and `z̃ = y`, so the transposed product and the transposed preconditioner solve disappear. The iterates equal the general algorithm's (residual histories agree to 1e-8 over the first 40 iterations), at half the cost, i.e. the same cost per iteration as COCG with a smoother residual.
+* The complex generalisation of the real QMR recurrences needs only two changes: unconjugated bilinear forms for the Lanczos coefficients, moduli for the rotation angles (`θ = ρ⁺/(γ|β|)`). It passed on the first run on real and complex nonsymmetric systems.
+* **GCRO-DR's least-squares problem decouples.** With `r ⟂ C` the `(k + j + 1) × (k + j)` problem `min ‖[0; βe₁] − [D B; 0 H̄] y‖` reduces to the plain Hessenberg problem `min ‖βe₁ − H̄ y_v‖` (choose `y_u = −D⁻¹B y_v`), so the usual Givens recurrence monitors convergence and the update is `x += M⁻¹(V y_v − U B y_v)`. The `k` diagonal scalings `D` cancel.
+* Harmonic Ritz vectors are obtained without a generalised eigensolver: Cholesky of the HPD matrix `ḠᴴḠ` turns `ḠᴴḠ g = θ Ḡᴴ(V̂ᴴŴ) g` into a standard problem for `1/θ`, solved with the complex Schur routine already in `dense/`. For real matrices complex pairs are replaced by their real and imaginary parts (`k` stays the number of real vectors).
+* Recomputing `r = b − A x` and re-projecting onto `C` at every cycle (one extra product) is the robust choice against the drift of a recursively updated residual and of the orthogonality to `C` (kept for safety; I did not measure the algorithm without it).
+* Numbers: restarted GMRES(30) 2 095 iterations, GCRO-DR(30,10) 632 (32 cycles) on a 400-unknown convection–diffusion problem whose smallest eigenvalues stall the restart; right-hand sides 2–4 of the same matrix: 310 / 301 / 296 iterations after 639 for the first; five shifted matrices (shift step 1e-4): 1 223 against 2 154 iterations. The gain is the deflation of the small eigenvalues, so it is large exactly when GMRES(m) stalls and small otherwise.
+
+## 27. LU with a user-chosen ordering (S2b)  (measured)
+
+`sparse_lu.rs` (left-looking, Gilbert–Peierls; threshold pivoting preferring the diagonal) on complex symmetric Helmholtz-plus-absorption matrices, 4 vCPUs but the code is sequential:
+
+| matrix | ordering | nnz(L+U) | factor [s] | solve [s] |
+|---|---|---|---|---|
+| 2-D 160², n = 25 600 | natural | 8.17 M | 1.81 | 0.030 |
+| | AMD | 1.28 M | 0.20 | 0.0048 |
+| | nested dissection | 1.44 M | 0.20 | 0.0054 |
+| | **faer LU (COLAMD, supernodal)** | n/a | 0.18 | 0.0082 |
+| 3-D 24³, n = 13 824 | natural | 15.3 M | 10.99 | 0.046 |
+| | AMD | 3.74 M | 2.67 | 0.011 |
+| | nested dissection | 3.39 M | 1.48 | 0.0105 |
+| | **faer LU** | n/a | 0.75 | 0.022 |
+
+* The ordering is worth 5–7× in fill and factor time (the same lesson as item 24), and for LU as for Cholesky nested dissection wins on 3-D and AMD on 2-D.
+* faer's supernodal code is still 1–2× faster to *factor* (dense kernels) while our single-RHS solve is 1.6–2× faster (faer's solve is the 3-D bottleneck noted in item 8). faer does not expose the size of its LU factors, so the fill of COLAMD could not be compared.
+* With a symmetric ordering and diagonal preference the diagonal pivot was accepted every time on the SPD Laplacian (`off_diagonal_pivots = 0`, asserted); a row-permuted matrix has zero diagonal entries, needs real pivoting and is handled (tests).
+* Lesson on the DFS: the reach of a column must be traversed in topological order; the first draft's `while let … filter` stack loop was needlessly clever. A plain `isize` head index is clearer and was correct.
+
+## 28. Low-rank structure (S4)  (measured)
+
+* **Kernel matrices:** `0.05 ln(|i−j|/n)` + diagonal, tolerance 1e-8: top-level off-diagonal rank 16 → 21 while `n` grows from 1 024 to 16 384; HODLR storage 17 % → 2 % of dense; factorisation 5 ms → 0.26 s and a solve 0.1 ms → 6 ms (≈ `n log² n`). The residual of the solve against the compressed matrix is 1e-15, against the true matrix about the compression tolerance.
+* **Schur complement of a 2-D 5-point grid on the middle line** (the front a nested-dissection multifrontal solver would hold): off-diagonal ranks 8 / 9 / 10 for separators of 64 / 128 / 256 unknowns at tolerance 1e-8, storage 78 % / 54 % / 36 % of dense. The rank grows by one per doubling — the logarithmic growth that makes BLR/HSS fronts attractive in 2-D. In 3-D the separator is a surface and the ranks are expected to grow faster (not measured here); weak admissibility (all off-diagonal blocks compressed, as here) is then expected to lose to strong admissibility (H, H² matrices), which is not implemented.
+* ACA with partial pivoting stops only after two consecutive small terms, as a guard against a single small term caused by an unlucky pivot row (a precaution; I did not construct a failing case). Full-pivoting ACA on an explicit dense block is more robust and is what the sparse-matrix constructor uses.
+* A HODLR factorisation at tolerance 1e-2 (7 % storage) is a good *preconditioner* for a kernel system: GMRES(60) 25 → 5 iterations.
+
+## 29. Matrix-free high-order operators (M2)  (measured, partly contradicts the expectation)
+
+* The port list's motivation for matrix-free operators ("assembled high-order matrices are dense per element") holds for **curved/general** hexahedra, **not** for axis-aligned boxes with GLL collocation. There the tensor structure makes each element matrix very sparse (`K_e = Σ_d s_d ⊗ A`, each term couples nodes sharing two of three indices), so assembled CSR has ≈ 3(p+1) entries per row, runs at memory speed and was 10–150× faster than the *first version* of my sum-factorised kernel (p = 1…6: 0.2–0.7 ms against 30–7 ms for 50 653 unknowns; the kernel was then made 2× faster, the box case was not re-measured). The first benchmark (box geometry) showed matrix-free 15–100× *slower*; that is the result, not a bug (matrix-free equals assembled to 1e-13).
+* With **mapped geometry** the geometric tensor `G_ab` couples all directions, the assembled blocks are dense and the picture flips: 15 625 unknowns, 3-D, warped: CSR 0.16 / 0.32 / 0.63 / 1.03 / 2.28 ms against matrix-free 8.9 / 2.9 / 1.9 / 1.4 / 1.25 ms for p = 1 / 2 / 3 / 4 / 6 — crossover at p ≈ 5, 1.8× faster at p = 6 (matrix-free cost is nearly independent of p at fixed unknown count: 1.25 / 1.12 / 1.13 ms for p = 6 / 8 / 12; CSR was not assembled beyond p = 6), and **zero matrix memory** against 176 → 1 294 bytes per unknown for CSR. Matrix-free also avoids the assembly time (0.1 → 0.5 s).
+* The kernel reaches about 1 Gflop/s: the inner loops are generic over `T`, `p` is a run-time value, the `1 ≤ n ≤ 13` line lengths are too short to vectorise well. A `const`-generic kernel per `p` is the obvious next speed-up; the first optimisation (contiguous dot products for the fastest axis, `chunks_exact` loops) alone gave 2×.
+* Parallel layout: elements are processed in `z`-layers; even layers then odd layers write disjoint `&mut` slices of the output, so no atomics or unsafe code are needed, and each output entry receives its contributions in a fixed order (bit-identical for any thread count, tested).
+* Spectral accuracy checks: lowest six Laplace eigenvalues on (0,π)² with 2×2 elements: error 2e-2 / 3e-5 / 1e-8 for p = 4 / 6 / 8; Poisson nodal error 3e-2 → 6e-10 for p = 2 … 8; on a warped mesh 7e-3 / 9e-5 / 1e-6 for p = 3 / 5 / 7. A first test with a warp containing `|cos|` (not smooth) converged only algebraically — the mesh map must be smooth for exponential convergence.
+
+## 30. ADS for H(div) (P1b)  (measured)
+
+* The exact sequence is the best test of a mesh generator: with flux degrees of freedom on interior faces and circulations on interior edges, `C G = 0`, **`Cᵀ M_f C` equals the Nédélec curl-curl matrix to 1e-11** (the curl of a lowest-order Nédélec function *is* a Raviart–Thomas function) and `D C = 0` all passed the first time, which fixes orientations, signs and masses at once.
+* `Cᵀ A C = β Cᵀ M_f C` is singular on gradients, so the curl correction needs a mass regularisation `ε M_e` before AMS can be applied; `ε = 0.05 · mean diag(CᵀAC)/mean diag(M_e)` worked without tuning (PCG 15 / 19 / 21 iterations for n = 4 / 8 / 12; 15 at β = 1e-4, where Jacobi needs 1 560).
+* The preconditioner is exactly symmetric (tested by `yᵀM⁻¹x = xᵀM⁻¹y` to 1e-10), as needed for CG; complex symmetric `A` works with COCG (≤ 60 iterations on n = 8).
+
+## 31. NLEIGS (N2b)  (measured)
+
+* **Singularity at the origin.** The rational basis divides by `1 − z/ξ`, which is undefined for `ξ = 0`, exactly where `√λ` has its branch point. Measuring all points from the centre of the region (singularities cannot lie inside it) fixed it; the linearisation is then expressed in `λ' = λ − centre`.
+* The last pole must be `∞` for the pencil to be linear (the paper's convention); the degree is therefore fixed *before* the poles are chosen, which is why the code rebuilds the interpolant for a list of degrees (4, 6, 8, 12, … ) rather than truncating one long sequence.
+* Degrees chosen on the test problems (target interpolation error 1e-11): 4 (quadratic), 16 (Drude pole; achieved error 7.7e-15), 16 (`√λ` with the cut along the negative axis; error 2.4e-13). A pure polynomial interpolant of a function with a pole 1.5 radii away is orders of magnitude worse at the same degree (tested).
+* The structured shift-and-invert operator needs one factorisation of `T̃(s)`; per application `2·(#terms)` sparse products and `O(d · #terms · n)` vector updates. Computing `Σ_j D_j c_j` as `Σ_t A_t (Σ_j c_{t,j} c_j)` instead of forming the `d` matrices `D_j` saves a factor `d / #terms` products.
+* Result quality: the closed-form `√λ` radiation problem (n = 50) returns 33 of 33 eigenvalues in an ellipse (residuals asserted below 1e-9, polishing on); the Drude problem's largest residual is 2.7e-13; the damped quadratic needs 57 operator applications and 4 restarts for 6+ eigenvalues; agreement with Beyn's contour method on a delay problem to 1e-7.
+* Memory is the cost: Krylov vectors have length `d · n`. The paper's compact representation (an `n × r` basis and small coefficient blocks, as TOAR does for `d = 2`) is the right next step for large `n`.
