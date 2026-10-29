@@ -13,6 +13,7 @@
 pub mod basis;
 pub mod dense;
 pub mod eps;
+pub mod kernels;
 pub mod ksp;
 pub mod operator;
 pub mod par;

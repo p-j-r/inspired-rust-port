@@ -205,18 +205,24 @@ impl CsrMatrix {
         d
     }
 
+    /// `y[k] = (A x)[start + k]` for the rows covered by `yc`.
     #[inline(always)]
-    fn row_dot(&self, i: usize, x: &[f64]) -> f64 {
-        let (lo, hi) = (self.indptr[i], self.indptr[i + 1]);
-        let idx = &self.indices[lo..hi];
-        let val = &self.values[lo..hi];
-        let mut s = 0.0;
-        for (&c, &v) in idx.iter().zip(val) {
-            // SAFETY: `try_new` guarantees every stored column index is `< ncols`,
-            // and callers assert `x.len() == ncols`.
-            s += v * unsafe { *x.get_unchecked(c as usize) };
+    fn rows_into(&self, start: usize, x: &[f64], yc: &mut [f64]) {
+        let end = start + yc.len();
+        assert!(end <= self.nrows && x.len() == self.ncols);
+        let ip = &self.indptr[start..=end];
+        let (idx, val) = (&self.indices[..], &self.values[..]);
+        for (yi, w) in yc.iter_mut().zip(ip.windows(2)) {
+            let (lo, hi) = (w[0], w[1]);
+            let mut s = 0.0;
+            for p in lo..hi {
+                // SAFETY: `try_new` guarantees `indptr` is monotone with `indptr[nrows] == nnz ==
+                // indices.len() == values.len()`, so `p < nnz`; every stored column index is
+                // `< ncols == x.len()` (asserted above).
+                s += unsafe { *val.get_unchecked(p) * *x.get_unchecked(*idx.get_unchecked(p) as usize) };
+            }
+            *yi = s;
         }
-        s
     }
 
     /// `y ← A x`.
@@ -224,15 +230,9 @@ impl CsrMatrix {
         assert_eq!(x.len(), self.ncols);
         assert_eq!(y.len(), self.nrows);
         if par::parallel_enabled(self.nrows) {
-            par::for_chunks_mut(y, ROW_CHUNK, |s, yc| {
-                for (k, yi) in yc.iter_mut().enumerate() {
-                    *yi = self.row_dot(s + k, x);
-                }
-            });
+            par::for_chunks_mut(y, ROW_CHUNK, |s, yc| self.rows_into(s, x, yc));
         } else {
-            for (i, yi) in y.iter_mut().enumerate() {
-                *yi = self.row_dot(i, x);
-            }
+            self.rows_into(0, x, y);
         }
     }
 
@@ -243,38 +243,18 @@ impl CsrMatrix {
         assert_eq!(x.len(), self.ncols);
         assert_eq!(y.len(), self.nrows);
         let n = self.nrows;
-        if par::parallel_enabled(n) {
-            use std::sync::atomic::{AtomicPtr, Ordering};
-            // Disjoint row chunks write disjoint ranges of `y`; share the base pointer.
-            let base = AtomicPtr::new(y.as_mut_ptr());
-            par::sum_chunks(n, ROW_CHUNK, |s, e| {
-                // SAFETY: chunks `[s, e)` are disjoint and within `y`.
-                let yc = unsafe {
-                    std::slice::from_raw_parts_mut(base.load(Ordering::Relaxed).add(s), e - s)
-                };
-                self.chunk_spmv_dot(s, x, yc)
-            })
-        } else {
-            let mut acc = 0.0;
-            let mut s = 0;
-            while s < n {
-                let e = (s + ROW_CHUNK).min(n);
-                acc += self.chunk_spmv_dot(s, x, &mut y[s..e]);
-                s = e;
-            }
-            acc
-        }
+        let ys = par::SharedMut::new(y);
+        par::sum_chunks(n, ROW_CHUNK, |s, e| {
+            // SAFETY: row chunks are disjoint ranges of `y`, which is otherwise untouched.
+            let yc = unsafe { ys.range(s, e) };
+            self.chunk_spmv_dot(s, x, yc)
+        })
     }
 
     #[inline(always)]
     fn chunk_spmv_dot(&self, start: usize, x: &[f64], yc: &mut [f64]) -> f64 {
-        let mut acc = 0.0;
-        for (k, yi) in yc.iter_mut().enumerate() {
-            let v = self.row_dot(start + k, x);
-            *yi = v;
-            acc += v * x[start + k];
-        }
-        acc
+        self.rows_into(start, x, yc);
+        crate::vecops::dot_chunk(&x[start..start + yc.len()], yc)
     }
 }
 

@@ -30,3 +30,7 @@ panic = "abort"
 
 [profile.bench]
 inherits = "release"
+
+# The numerical tests are heavy; optimise them even in debug test builds.
+[profile.test]
+opt-level = 2

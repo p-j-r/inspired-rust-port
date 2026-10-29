@@ -1,6 +1,6 @@
 use super::{ConvTest, ConvergedReason, SolveInfo, Tolerances, ensure_len};
 use crate::operator::{LinearOperator, Preconditioner};
-use crate::vecops;
+use crate::vecops::{self, Scaling};
 
 /// Which residual norm CG monitors (PETSc `KSPSetNormType`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -41,7 +41,7 @@ impl Cg {
 
     /// Solve `A x = b`. `x` is the initial guess if `opts.initial_guess_nonzero`, and is
     /// overwritten with the solution in every case.
-    pub fn solve<A: LinearOperator, M: Preconditioner>(
+    pub fn solve<A: LinearOperator + ?Sized, M: Preconditioner + ?Sized>(
         &mut self,
         a: &A,
         m: &M,
@@ -75,8 +75,19 @@ impl Cg {
             vecops::copy(b, r);
         }
 
-        // Initial norm and β = zᵀr.
-        let (mut beta, mut dp) = pc_and_norm(m, r, z, opts.norm, &mut info);
+        // Element-wise preconditioners (identity, Jacobi) are fused into the vector updates;
+        // for the identity `z` aliases `r` and is never materialised.
+        let scaling = m.scaling();
+        let identity = matches!(scaling, Some(Scaling::Identity));
+
+        let (mut beta, mut dp) = match scaling {
+            Some(sc) => {
+                let (zr, zz, rr) = scaled_stats(sc, r, z);
+                info.pc_applies += 1;
+                (zr, monitored(opts.norm, zr, zz, rr))
+            }
+            None => pc_and_norm(m, r, z, opts.norm, &mut info),
+        };
         // With a non-zero guess PETSc measures rtol against the preconditioned/natural
         // norm of the right-hand side instead of the initial residual.
         let reference = if opts.initial_guess_nonzero {
@@ -114,10 +125,11 @@ impl Cg {
                 info.reason = ConvergedReason::DivergedIndefinitePc;
                 break;
             }
+            let zv: &[f64] = if identity { r } else { z };
             if i == 0 {
-                vecops::copy(z, p);
+                vecops::copy(zv, p);
             } else {
-                vecops::aypx(beta / betaold, z, p);
+                vecops::aypx(beta / betaold, zv, p);
             }
             let dpi = a.apply_dot(p, w);
             info.matvecs += 1;
@@ -132,8 +144,18 @@ impl Cg {
             }
             dpi_old = dpi;
             let alpha = beta / dpi;
-            vecops::axpy2(alpha, p, x, w, r);
-            (beta, dp) = pc_and_norm(m, r, z, opts.norm, &mut info);
+            match scaling {
+                Some(sc) => {
+                    let (zr, zz, rr) = vecops::cg_update_scaled(alpha, p, x, w, r, z, sc);
+                    info.pc_applies += 1;
+                    beta = zr;
+                    dp = monitored(opts.norm, zr, zz, rr);
+                }
+                None => {
+                    vecops::axpy2(alpha, p, x, w, r);
+                    (beta, dp) = pc_and_norm(m, r, z, opts.norm, &mut info);
+                }
+            }
             info.residual_norm = dp;
             if opts.record_history {
                 info.history.push(dp);
@@ -153,8 +175,33 @@ impl Cg {
     }
 }
 
+fn monitored(norm: CgNorm, zr: f64, zz: f64, rr: f64) -> f64 {
+    match norm {
+        CgNorm::Preconditioned => zz.sqrt(),
+        CgNorm::Unpreconditioned => rr.sqrt(),
+        CgNorm::Natural => zr.abs().sqrt(),
+    }
+}
+
+/// `(zᵀr, zᵀz, rᵀr)` for `z = M⁻¹r` with an element-wise `M⁻¹` (materialising `z` unless identity).
+fn scaled_stats(sc: Scaling<'_>, r: &[f64], z: &mut [f64]) -> (f64, f64, f64) {
+    match sc {
+        Scaling::Identity => {
+            let rr = vecops::dot(r, r);
+            (rr, rr, rr)
+        }
+        Scaling::Diagonal(d) => {
+            for ((zi, di), ri) in z.iter_mut().zip(d).zip(r) {
+                *zi = di * ri;
+            }
+            let (zr, zz) = vecops::dot_and_sq(z, r);
+            (zr, zz, vecops::dot(r, r))
+        }
+    }
+}
+
 /// Apply the preconditioner to `r`, returning `(β = zᵀr, monitored norm)`.
-fn pc_and_norm<M: Preconditioner>(
+fn pc_and_norm<M: Preconditioner + ?Sized>(
     m: &M,
     r: &[f64],
     z: &mut [f64],

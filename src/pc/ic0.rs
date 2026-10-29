@@ -1,4 +1,5 @@
 use super::{PcError, Preconditioner, check_square_sorted};
+use super::tri::TriSolver;
 use crate::sparse::CsrMatrix;
 
 /// Incomplete Cholesky with zero fill (PETSc `PCICC`, `levels = 0`): `A ≈ L Lᵀ`, with
@@ -6,12 +7,7 @@ use crate::sparse::CsrMatrix;
 /// `A` is read, so `A` is assumed symmetric.
 #[derive(Debug, Clone)]
 pub struct Ic0 {
-    n: usize,
-    // Lower triangle by rows, diagonal stored *last* in each row.
-    ptr: Vec<usize>,
-    idx: Vec<u32>,
-    val: Vec<f64>,
-    inv_diag: Vec<f64>,
+    tri: TriSolver,
 }
 
 impl Ic0 {
@@ -36,7 +32,7 @@ impl Ic0 {
             }
             ptr.push(idx.len());
         }
-        let mut inv_diag = vec![0.0; n];
+        let mut inv_diag = vec![0.0; n]; // 1 / lᵢᵢ
         for i in 0..n {
             let (lo, hi) = (ptr[i], ptr[i + 1]);
             for p in lo..hi - 1 {
@@ -69,31 +65,44 @@ impl Ic0 {
             val[hi - 1] = l_ii;
             inv_diag[i] = 1.0 / l_ii;
         }
-        Ok(Self { n, ptr, idx, val, inv_diag })
+        // Strict lower triangle scaled to unit diagonal, `L₁ = L diag(1/lⱼⱼ)`, and its transpose.
+        // Then `(L Lᵀ)⁻¹ r` is a unit-lower solve, a diagonal scaling by `1/lᵢᵢ²`, and a
+        // unit-upper solve, with no multiply on either dependency chain.
+        let (mut l_ptr, mut l_idx, mut l_val) = (vec![0usize], Vec::new(), Vec::new());
+        let mut count = vec![0usize; n + 1];
+        for i in 0..n {
+            let (lo, hi) = (ptr[i], ptr[i + 1] - 1);
+            for p in lo..hi {
+                let c = idx[p] as usize;
+                l_idx.push(idx[p]);
+                l_val.push(val[p] * inv_diag[c]);
+                count[c + 1] += 1;
+            }
+            l_ptr.push(l_idx.len());
+        }
+        for i in 0..n {
+            count[i + 1] += count[i];
+        }
+        let u_ptr = count.clone();
+        let mut next = count;
+        let mut u_idx = vec![0u32; l_idx.len()];
+        let mut u_val = vec![0.0; l_idx.len()];
+        for i in 0..n {
+            for p in l_ptr[i]..l_ptr[i + 1] {
+                let c = l_idx[p] as usize;
+                u_idx[next[c]] = i as u32;
+                u_val[next[c]] = l_val[p];
+                next[c] += 1;
+            }
+        }
+        let inv_diag_sq: Vec<f64> = inv_diag.iter().map(|d| d * d).collect();
+        let tri = TriSolver::new(n, (l_ptr, l_idx, l_val), (u_ptr, u_idx, u_val), None, inv_diag_sq);
+        Ok(Self { tri })
     }
 }
 
 impl Preconditioner for Ic0 {
     fn apply(&self, r: &[f64], z: &mut [f64]) {
-        let n = self.n;
-        assert!(r.len() == n && z.len() == n);
-        // L y = r
-        for i in 0..n {
-            let (lo, hi) = (self.ptr[i], self.ptr[i + 1] - 1);
-            let mut s = r[i];
-            for (&c, &v) in self.idx[lo..hi].iter().zip(&self.val[lo..hi]) {
-                s -= v * z[c as usize];
-            }
-            z[i] = s * self.inv_diag[i];
-        }
-        // Lᵀ z = y, scattering each finished z_i into the rows above it.
-        for i in (0..n).rev() {
-            let zi = z[i] * self.inv_diag[i];
-            z[i] = zi;
-            let (lo, hi) = (self.ptr[i], self.ptr[i + 1] - 1);
-            for (&c, &v) in self.idx[lo..hi].iter().zip(&self.val[lo..hi]) {
-                z[c as usize] -= v * zi;
-            }
-        }
+        self.tri.solve(r, z);
     }
 }

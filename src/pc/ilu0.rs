@@ -1,4 +1,5 @@
 use super::{PcError, Preconditioner, check_square_sorted};
+use super::tri::TriSolver;
 use crate::sparse::CsrMatrix;
 
 /// Incomplete LU with zero fill, natural ordering (PETSc `PCILU`, `levels = 0`).
@@ -7,16 +8,7 @@ use crate::sparse::CsrMatrix;
 /// pattern of `A`. For tridiagonal matrices this is the exact LU factorisation.
 #[derive(Debug, Clone)]
 pub struct Ilu0 {
-    n: usize,
-    // Strictly lower part (unit diagonal implied), CSR.
-    l_ptr: Vec<usize>,
-    l_idx: Vec<u32>,
-    l_val: Vec<f64>,
-    // Strictly upper part, CSR.
-    u_ptr: Vec<usize>,
-    u_idx: Vec<u32>,
-    u_val: Vec<f64>,
-    inv_diag: Vec<f64>,
+    tri: TriSolver,
 }
 
 impl Ilu0 {
@@ -60,41 +52,27 @@ impl Ilu0 {
         let (mut u_ptr, mut u_idx, mut u_val) = (vec![0], Vec::new(), Vec::new());
         let mut inv_diag = Vec::with_capacity(n);
         for i in 0..n {
+            let inv = 1.0 / val[diag[i]];
             for p in ip[i]..diag[i] {
                 l_idx.push(ix[p]);
                 l_val.push(val[p]);
             }
+            // Row-scale U by 1/uᵢᵢ so the backward sweep needs no multiply on its dependency chain.
             for p in diag[i] + 1..ip[i + 1] {
                 u_idx.push(ix[p]);
-                u_val.push(val[p]);
+                u_val.push(val[p] * inv);
             }
             l_ptr.push(l_idx.len());
             u_ptr.push(u_idx.len());
-            inv_diag.push(1.0 / val[diag[i]]);
+            inv_diag.push(inv);
         }
-        Ok(Self { n, l_ptr, l_idx, l_val, u_ptr, u_idx, u_val, inv_diag })
+        let tri = TriSolver::new(n, (l_ptr, l_idx, l_val), (u_ptr, u_idx, u_val), None, inv_diag);
+        Ok(Self { tri })
     }
 }
 
 impl Preconditioner for Ilu0 {
     fn apply(&self, r: &[f64], z: &mut [f64]) {
-        let n = self.n;
-        assert!(r.len() == n && z.len() == n);
-        for i in 0..n {
-            let mut s = r[i];
-            let (lo, hi) = (self.l_ptr[i], self.l_ptr[i + 1]);
-            for (&c, &v) in self.l_idx[lo..hi].iter().zip(&self.l_val[lo..hi]) {
-                s -= v * z[c as usize];
-            }
-            z[i] = s;
-        }
-        for i in (0..n).rev() {
-            let mut s = z[i];
-            let (lo, hi) = (self.u_ptr[i], self.u_ptr[i + 1]);
-            for (&c, &v) in self.u_idx[lo..hi].iter().zip(&self.u_val[lo..hi]) {
-                s -= v * z[c as usize];
-            }
-            z[i] = s * self.inv_diag[i];
-        }
+        self.tri.solve(r, z);
     }
 }

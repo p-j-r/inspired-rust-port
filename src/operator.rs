@@ -28,6 +28,12 @@ pub trait Preconditioner {
         self.apply(r, z);
         vecops::dot_and_sq(z, r)
     }
+
+    /// Reports an element-wise structure so that solvers may fuse `M⁻¹` into their vector
+    /// updates; `None` (the default) means a general operator.
+    fn scaling(&self) -> Option<vecops::Scaling<'_>> {
+        None
+    }
 }
 
 /// `M = I` (PETSc `PCNONE`).
@@ -37,6 +43,9 @@ pub struct Identity;
 impl Preconditioner for Identity {
     fn apply(&self, r: &[f64], z: &mut [f64]) {
         vecops::copy(r, z);
+    }
+    fn scaling(&self) -> Option<vecops::Scaling<'_>> {
+        Some(vecops::Scaling::Identity)
     }
 }
 
@@ -79,5 +88,8 @@ impl<T: Preconditioner + ?Sized> Preconditioner for &T {
     }
     fn apply_dots(&self, r: &[f64], z: &mut [f64]) -> (f64, f64) {
         (**self).apply_dots(r, z)
+    }
+    fn scaling(&self) -> Option<vecops::Scaling<'_>> {
+        (**self).scaling()
     }
 }

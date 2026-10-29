@@ -5,6 +5,7 @@
 //! orthogonalised stays in L2 while every basis column streams through once.
 
 use crate::par::{self, CHUNK};
+use crate::kernels;
 use crate::vecops::dot_chunk;
 
 /// `cap` columns of length `n`, stored contiguously column after column.
@@ -81,6 +82,10 @@ impl Basis {
     pub fn sub_combination(&self, k: usize, h: &[f64], w: &mut [f64]) {
         self.view().sub_combination(k, h, w)
     }
+    /// See [`BasisView::sub_combination_norm_sq`].
+    pub fn sub_combination_norm_sq(&self, k: usize, h: &[f64], w: &mut [f64]) -> f64 {
+        self.view().sub_combination_norm_sq(k, h, w)
+    }
     /// See [`BasisView::add_combination`].
     pub fn add_combination(&self, k: usize, c: &[f64], y: &mut [f64]) {
         self.view().add_combination(k, c, y)
@@ -155,10 +160,7 @@ impl BasisView<'_> {
         let h = &mut h[..k];
         h.fill(0.0);
         par::fold_chunks_vec(n, CHUNK, h, |s, e, part| {
-            let wc = &w[s..e];
-            for (j, p) in part.iter_mut().enumerate() {
-                *p = dot_chunk(&self.data[j * n + s..j * n + e], wc);
-            }
+            kernels::dots_cols(self.data, n, s, e, w, part);
         });
     }
 
@@ -166,32 +168,28 @@ impl BasisView<'_> {
     pub fn sub_combination(&self, k: usize, h: &[f64], w: &mut [f64]) {
         let n = self.n;
         assert!((k * n) <= self.data.len() && w.len() == n && h.len() >= k);
-        par::for_chunks_mut(w, CHUNK, |s, wc| {
-            let len = wc.len();
-            for j in 0..k {
-                let col = &self.data[j * n + s..j * n + s + len];
-                let hj = h[j];
-                for (wi, vi) in wc.iter_mut().zip(col) {
-                    *wi -= hj * vi;
-                }
-            }
-        });
+        par::for_chunks_mut(w, CHUNK, |s, wc| kernels::sub_cols(self.data, n, s, k, h, wc));
+    }
+
+    /// `w ← w − V[:, :k] h`, returning `‖w‖²` of the result, computed while each chunk of `w`
+    /// is still cache-resident (saves a full pass over `w`).
+    pub fn sub_combination_norm_sq(&self, k: usize, h: &[f64], w: &mut [f64]) -> f64 {
+        let n = self.n;
+        assert!((k * n) <= self.data.len() && w.len() == n && h.len() >= k);
+        let ws = par::SharedMut::new(w);
+        par::sum_chunks(n, CHUNK, |s, e| {
+            // SAFETY: chunk ranges are disjoint and `w` is otherwise untouched.
+            let wc = unsafe { ws.range(s, e) };
+            kernels::sub_cols(self.data, n, s, k, h, wc);
+            dot_chunk(wc, wc)
+        })
     }
 
     /// `y ← y + V[:, :k] c`.
     pub fn add_combination(&self, k: usize, c: &[f64], y: &mut [f64]) {
         let n = self.n;
         assert!((k * n) <= self.data.len() && y.len() == n && c.len() >= k);
-        par::for_chunks_mut(y, CHUNK, |s, yc| {
-            let len = yc.len();
-            for j in 0..k {
-                let col = &self.data[j * n + s..j * n + s + len];
-                let cj = c[j];
-                for (yi, vi) in yc.iter_mut().zip(col) {
-                    *yi += cj * vi;
-                }
-            }
-        });
+        par::for_chunks_mut(y, CHUNK, |s, yc| kernels::add_cols(self.data, n, s, k, c, yc));
     }
 }
 
@@ -237,6 +235,10 @@ mod tests {
             let r = w[i] - (0..k).map(|j| h[j] * b.col(j)[i]).sum::<f64>();
             assert!((r - w2[i]).abs() < 1e-12);
         }
+        let mut w3 = w.clone();
+        let nsq = b.sub_combination_norm_sq(k, &h, &mut w3);
+        assert_eq!(w3, w2);
+        assert_eq!(nsq, crate::vecops::dot(&w3, &w3));
         let mut y = w2.clone();
         b.add_combination(k, &h, &mut y);
         for i in (0..n).step_by(991) {

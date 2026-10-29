@@ -15,7 +15,7 @@ use crate::vecops;
 ///
 /// `start` is the initial vector (SLEPc `EPSSetInitialSpace`); a fixed pseudo-random vector
 /// is used when it is `None`. The operator is assumed symmetric; this is not checked.
-pub fn krylov_schur<A: LinearOperator>(
+pub fn krylov_schur<A: LinearOperator + ?Sized>(
     a: &A,
     start: Option<&[f64]>,
     opts: &EpsOptions,
@@ -213,17 +213,15 @@ fn orthogonalize(v: &mut Basis, j: usize, h: &mut [f64], h2: &mut [f64]) -> (f64
     let (head, w) = v.split_col(j + 1);
     let k = j + 1;
     head.dots(k, w, h);
-    head.sub_combination(k, h, w);
-    let mut after = vecops::norm2(w);
+    let mut after = head.sub_combination_norm_sq(k, h, w).sqrt();
     let sumsq: f64 = h[..k].iter().map(|x| x * x).sum();
     let before = (after * after + sumsq).sqrt();
     if after < std::f64::consts::FRAC_1_SQRT_2 * before {
         head.dots(k, w, h2);
-        head.sub_combination(k, h2, w);
+        after = head.sub_combination_norm_sq(k, h2, w).sqrt();
         for (a, b) in h[..k].iter_mut().zip(&h2[..k]) {
             *a += b;
         }
-        after = vecops::norm2(w);
     }
     (after, after <= 100.0 * f64::EPSILON * before)
 }

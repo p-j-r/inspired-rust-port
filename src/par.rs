@@ -47,34 +47,67 @@ pub fn sum_chunks(n: usize, chunk: usize, f: impl Fn(usize, usize) -> f64 + Sync
     acc
 }
 
-/// Like [`sum_chunks`] for two simultaneous scalar reductions.
+/// Like [`sum_chunks`] for `N` simultaneous scalar reductions.
 #[inline]
-pub fn sum_chunks2(n: usize, chunk: usize, f: impl Fn(usize, usize) -> [f64; 2] + Sync) -> [f64; 2] {
+pub fn sum_chunks_n<const N: usize>(
+    n: usize,
+    chunk: usize,
+    f: impl Fn(usize, usize) -> [f64; N] + Sync,
+) -> [f64; N] {
     #[cfg(feature = "parallel")]
     if parallel_enabled(n) {
         use rayon::prelude::*;
         let nchunks = n.div_ceil(chunk);
-        let parts: Vec<[f64; 2]> = (0..nchunks)
+        let parts: Vec<[f64; N]> = (0..nchunks)
             .into_par_iter()
             .map(|c| f(c * chunk, ((c + 1) * chunk).min(n)))
             .collect();
-        let mut acc = [0.0; 2];
+        let mut acc = [0.0; N];
         for p in parts {
-            acc[0] += p[0];
-            acc[1] += p[1];
+            for i in 0..N {
+                acc[i] += p[i];
+            }
         }
         return acc;
     }
-    let mut acc = [0.0; 2];
+    let mut acc = [0.0; N];
     let mut s = 0;
     while s < n {
         let e = (s + chunk).min(n);
         let p = f(s, e);
-        acc[0] += p[0];
-        acc[1] += p[1];
+        for i in 0..N {
+            acc[i] += p[i];
+        }
         s = e;
     }
     acc
+}
+
+/// A mutable slice that can be shared across chunk closures which each touch a *disjoint*
+/// range. This is what lets fused kernels update several vectors and return reductions
+/// in a single pass over [`sum_chunks_n`].
+pub struct SharedMut {
+    ptr: *mut f64,
+    len: usize,
+}
+
+// SAFETY: access goes through `range`, whose contract requires disjoint ranges per thread.
+unsafe impl Send for SharedMut {}
+unsafe impl Sync for SharedMut {}
+
+impl SharedMut {
+    pub fn new(s: &mut [f64]) -> Self {
+        Self { ptr: s.as_mut_ptr(), len: s.len() }
+    }
+
+    /// # Safety
+    /// No two live slices obtained from the same `SharedMut` may overlap, and the original
+    /// slice must not be used while they are alive.
+    #[inline(always)]
+    pub unsafe fn range(&self, start: usize, end: usize) -> &mut [f64] {
+        assert!(start <= end && end <= self.len);
+        unsafe { std::slice::from_raw_parts_mut(self.ptr.add(start), end - start) }
+    }
 }
 
 /// Per-chunk vector-valued results (used for `k`-vector reductions such as `Vᵀw`),

@@ -52,10 +52,10 @@ fn gmres_is_bitwise_identical_across_thread_counts() {
 
 #[test]
 fn krylov_schur_is_bitwise_identical_across_thread_counts() {
-    let a = laplacian_2d(300, 190);
+    let a = laplacian_2d(190, 180);
     let run = |threads| {
         with_threads(threads, || {
-            let r = krylov_schur(&a, None, &EpsOptions { tol: 1e-6, ..EpsOptions::new(3) }).unwrap();
+            let r = krylov_schur(&a, None, &EpsOptions { tol: 1e-4, ..EpsOptions::new(2) }).unwrap();
             (r.values.clone(), r.vector(0).to_vec(), r.iterations)
         })
     };

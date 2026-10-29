@@ -2,3 +2,5 @@
 **/*.rs.bk
 /bench/data/
 /bench/results/*.tmp
+/bench/c/distro/
+/bench/c/native/

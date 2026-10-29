@@ -4,6 +4,7 @@ mod ic0;
 mod ilu0;
 mod jacobi;
 mod sor;
+mod tri;
 
 pub use crate::operator::{Identity, Preconditioner};
 pub use ic0::Ic0;

@@ -70,7 +70,7 @@ impl Gmres {
         Self { opts, ..Default::default() }
     }
 
-    pub fn solve<A: LinearOperator, M: Preconditioner>(
+    pub fn solve<A: LinearOperator + ?Sized, M: Preconditioner + ?Sized>(
         &mut self,
         a: &A,
         m: &M,
@@ -296,8 +296,7 @@ fn orthogonalize(v: &mut Basis, k: usize, kind: Orthogonalization, h: &mut [f64]
     match kind {
         Orthogonalization::ClassicalGramSchmidt => {
             head.dots(k + 1, w, h);
-            head.sub_combination(k + 1, h, w);
-            vecops::norm2(w)
+            head.sub_combination_norm_sq(k + 1, h, w).sqrt()
         }
         Orthogonalization::ClassicalGramSchmidtIfNeeded => {
             let before = vecops::norm2(w);

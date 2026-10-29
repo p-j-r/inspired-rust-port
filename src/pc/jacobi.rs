@@ -23,6 +23,10 @@ impl Jacobi {
 }
 
 impl Preconditioner for Jacobi {
+    fn scaling(&self) -> Option<crate::vecops::Scaling<'_>> {
+        Some(crate::vecops::Scaling::Diagonal(&self.inv_diag))
+    }
+
     fn apply(&self, r: &[f64], z: &mut [f64]) {
         assert!(r.len() == self.inv_diag.len() && z.len() == r.len());
         par::for_chunks_mut(z, CHUNK, |s, zc| {
