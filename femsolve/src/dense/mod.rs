@@ -125,3 +125,45 @@ impl<T> IndexMut<(usize, usize)> for Dense<T> {
 pub fn hermitian_eig<T: FaerScalar>(a: &Dense<T>) -> Result<(Vec<f64>, Dense<T>), DenseError> {
     crate::faer_glue::hermitian_eig(a)
 }
+
+/// Solves the small dense complex system `A x = b` by Gaussian elimination with partial pivoting
+/// (used for tiny projected systems such as the deflation Gram matrices; `A` is `n × n`).
+/// Returns `None` if `A` is numerically singular.
+pub fn solve_small(a: &Dense<crate::scalar::C64>, b: &[crate::scalar::C64]) -> Option<Vec<crate::scalar::C64>> {
+    let n = a.rows();
+    assert!(a.cols() == n && b.len() == n);
+    let mut m = a.clone();
+    let mut x = b.to_vec();
+    let scale = m.frobenius().max(f64::MIN_POSITIVE);
+    for k in 0..n {
+        let p = (k..n).max_by(|&i, &j| m[(i, k)].norm().total_cmp(&m[(j, k)].norm()))?;
+        if m[(p, k)].norm() <= 1e-14 * scale {
+            return None;
+        }
+        if p != k {
+            for c in 0..n {
+                let t = m[(k, c)];
+                m[(k, c)] = m[(p, c)];
+                m[(p, c)] = t;
+            }
+            x.swap(k, p);
+        }
+        for i in k + 1..n {
+            let f = m[(i, k)] / m[(k, k)];
+            for c in k..n {
+                let v = m[(k, c)];
+                m[(i, c)] -= f * v;
+            }
+            let xk = x[k];
+            x[i] -= f * xk;
+        }
+    }
+    for i in (0..n).rev() {
+        let mut sum = x[i];
+        for c in i + 1..n {
+            sum -= m[(i, c)] * x[c];
+        }
+        x[i] = sum / m[(i, i)];
+    }
+    Some(x)
+}

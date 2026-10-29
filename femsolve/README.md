@@ -14,6 +14,10 @@ measured, and [`../docs/NYX_INTEGRATION.md`](../docs/NYX_INTEGRATION.md) for how
 | `linop` | `LinearOperator` / `Preconditioner` traits with fusion hooks (`apply_dotc`, `apply_block`, `apply_block_with_bx`) |
 | `basis`, `kernels`, `vecops`, `par` | deterministic, cache-blocked multi-vector kernels (fixed row chunks, ordered folds: identical bits for any thread count) |
 | `dense` | Hermitian EVD (faer), complex Schur + reordering (own code) |
+| `ksp`, `pc` | **CG / COCG / GMRES / FGMRES** (real and complex, PETSc 3.19 defaults), Jacobi preconditioner, `fs-ksp` |
+| `amg` | smoothed-aggregation **AMG** for real and complex-symmetric matrices, shifted-Laplacian helper for Helmholtz/PML |
+| `contour` | **contour-integral** eigensolver (block Sakurai–Sugiura / CIRR), `fs-contour` |
+| `jd` | **Jacobi–Davidson** with harmonic/standard extraction, locking and Schur deflation for interior eigenvalues |
 | `harness/` | SLEPc driver (`c/slepc_eps.c`, real and complex PETSc builds) and `run.py` comparison runner |
 
 ```rust

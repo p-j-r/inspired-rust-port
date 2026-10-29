@@ -134,3 +134,52 @@ With `--features parallel` the same kernels reach 20–40 GB/s effective on 4 vC
 * `Which` for complex spectra needs a target-aware key; real PETSc builds cannot take an imaginary shift.
 * Environment: `apt` (PETSc/SLEPc real + complex 3.19), crates.io and `gitlab.com` raw files are
   reachable from the sandbox; `sparse.tamu.edu` returns 403 (so no SuiteSparse breadth set yet).
+
+## 11. Krylov linear solvers (K1) — what PETSc really does  (read from PETSc 3.19 `cg.c`, `iterativ.c`; measured)
+
+* GMRES/FGMRES reproduce PETSc's iteration count exactly once the same default stopping rules
+  are used (`rtol` 1e-5, `atol` 1e-50, `dtol` 1e4, restart 30, left preconditioning with the
+  *preconditioned* residual norm, CGS orthogonalisation with refinement only on request).
+  Right preconditioning changes the monitored norm; compare like with like.
+* **PETSc's COCG aborts at iteration 2 on complex symmetric systems.** It tests the sign of the real part of
+  the bilinear form `(r, z)ᵀ`, which is meaningless for complex values. Our COCG has no such test; the
+  option `petsc_sign_test` reproduces the abort. COCG is therefore compared with PETSc only on real SPD.
+* The CG update `x += αp; r -= αAp; z = M⁻¹r; (r,z)` is fused with a diagonal preconditioner into
+  one pass; the saving shows in memory-bound sizes only.
+* FGMRES history in PETSc has duplicated entries at restarts; the judge collapses them.
+
+## 12. AMG (P2) and contour eigensolver (E3)  (measured)
+
+* Aggregation: all-neighbours aggregation gave operator complexity > 2; MIS-2 aggregation with a
+  maximum-relative strength measure gives 1.3–1.6 and a grid-independent PCG count.
+* For complex *symmetric* matrices the Galerkin product must use the plain transpose `PᵀAP`; `Pᴴ` destroys
+  the symmetry that COCG/the symmetric Gauss–Seidel V-cycle rely on. `hermitian: true` uses `Pᴴ`.
+* Shifted-Laplacian preconditioning is only judged fairly against an exact shifted LU on the same
+  problem and the same Krylov method: easy problems (small n) make anything look good, hard ones
+  (n > 100 per side at this frequency) break FGMRES whatever the preconditioner.
+* Contour method: a quadrature of 24 nodes leaks eigenvalues just outside the ellipse into the moments at
+  ≈ 1e-6, above any sensible `rank_tol`, so `rank ≥ count` and the Rayleigh–Ritz step must be followed by
+  region and residual filtering (done: `rejected` counts what was dropped). The stochastic count
+  estimate `tr(Vᴴ P V)/block` has a standard error of a few eigenvalues for block ≈ 10 and was *useless*
+  on the non-Hermitian pencil (−2 ± 46 for 17 eigenvalues): it is a warning light (found ≪ estimate − 3σ),
+  not a count.
+* faer 0.24.4 `generalized_eigen` panics for n = 1; special-cased in `faer_glue::generalized_eig_c64`.
+* Worker-parallel nodes (one factorisation each) are bit-identical to the serial loop because reductions
+  are done in node order.
+
+## 13. Jacobi–Davidson (E2)  (measured while debugging)
+
+* **Harmonic extraction: the right-hand matrix is `Wᴴ B V` with `W = (A − τB)V`, i.e. `(AV)ᴴ(BV) − τ̄(BV)ᴴ(BV)`.**
+  Using `(BV)ᴴ(AV)` instead is invisible for `B = I` and Hermitian standard problems but gives
+  erratic convergence and wrong "nearest" sets for generalised ones.
+* Harmonic Ritz vectors are not orthogonal to a just-locked Ritz vector, so after locking (and at every
+  restart) the kept basis columns must be re-orthogonalised against the locked set, with the image
+  `A·x_removed` replaced by `λ B x` (Hermitian) or zero (when `A V` is already Schur-deflated).
+  Without this, the non-Hermitian standard test did not converge in 400 iterations.
+* Standard Rayleigh–Ritz is faster than harmonic for the non-Hermitian complex-symmetric test with a target
+  off the real axis (37 vs ~60 outer iterations), so `JdOptions::new` sets `harmonic = hermitian`
+  (harmonic for the Hermitian, interior-mode case, standard otherwise). Override it per problem.
+* JD is a *local* method: it converges to eigenvalues in the neighbourhood of the target, not the exact
+  nearest `nev`. If the nearest set is required use Krylov–Schur shift-and-invert or the contour solver.
+* Complex symmetric (non-Hermitian) standard problems: locking must keep a Schur factor (`T`), eigenvectors
+  are recovered from its triangular eigenvectors.

@@ -462,3 +462,24 @@ impl<T: Scalar, S: ShiftedSolver<T>> LinearOperator<T> for ShiftInvertOperator<'
         self.solver.solve_block_in_place(&mut y[..n * nrhs], nrhs);
     }
 }
+
+/// A [`Preconditioner`](crate::linop::Preconditioner) from a factorisation of `A − τB`: `z = (A − τB)⁻¹ r`.
+/// Useful as the (exact) reference preconditioner of Jacobi–Davidson, or with a factorisation
+/// computed from a modified matrix (lower precision, dropped entries) as an approximation.
+pub struct ShiftedSolvePreconditioner<'a, T: Scalar, S: ShiftedSolver<T>> {
+    solver: &'a S,
+    _t: std::marker::PhantomData<T>,
+}
+
+impl<'a, T: Scalar, S: ShiftedSolver<T>> ShiftedSolvePreconditioner<'a, T, S> {
+    pub fn new(solver: &'a S) -> Self {
+        Self { solver, _t: std::marker::PhantomData }
+    }
+}
+
+impl<T: Scalar, S: ShiftedSolver<T>> crate::linop::Preconditioner<T> for ShiftedSolvePreconditioner<'_, T, S> {
+    fn apply(&self, r: &[T], z: &mut [T]) {
+        z.copy_from_slice(r);
+        self.solver.solve_block_in_place(z, 1);
+    }
+}

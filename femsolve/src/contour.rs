@@ -176,6 +176,9 @@ pub struct ContourResult {
     pub timings: ContourTimings,
 }
 
+/// Solution of one node: the stacked `(zB − A)⁻¹ B V`, factor time, solve time.
+type NodeSolve = Result<(Vec<C64>, f64, f64), SolverError>;
+
 /// All eigenvalues of `A x = λ B x` (`B = None`: identity) inside `opts.region`.
 pub fn contour_eigs<T: FaerScalar>(
     a: &Csr<T>,
@@ -239,7 +242,7 @@ pub fn contour_eigs<T: FaerScalar>(
             }
             Ok((y, tf, t.elapsed().as_secs_f64()))
         };
-        let results: Vec<Result<(Vec<C64>, f64, f64), SolverError>> = if workers == 1 {
+        let results: Vec<NodeSolve> = if workers == 1 {
             vec![solve_node(&mut facs[0], chunk[0])]
         } else {
             std::thread::scope(|sc| {

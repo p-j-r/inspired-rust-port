@@ -4,7 +4,7 @@ mod common;
 use common::*;
 use femsolve::contour::{ContourOptions, Ellipse, contour_eigs};
 use femsolve::csr::{laplacian_1d, laplacian_2d, mass_1d};
-use femsolve::{C64, Csr, Scalar};
+use femsolve::{C64, Csr};
 
 fn fe_spectrum(n: usize) -> Vec<f64> {
     (1..=n)

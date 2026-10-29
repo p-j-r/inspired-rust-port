@@ -99,5 +99,16 @@ LAPACK (BSD), AMD and COLAMD (BSD) in its own `COPYING.*` files), `num-complex` 
 optional `rayon` (MIT/Apache-2.0). The harness (`femsolve/harness`) links against the system PETSc/SLEPc
 (BSD-2-Clause) and is not part of the library.
 
-Not yet checked: the licences of other references named in the port list (hypre, MUMPS, PRIMME,
-BLOPEX, ChASE) — confirm each, and nyx's own licence, before reading code to port for them.
+Phase 2 (K1, P2, E3, E2): for the Krylov solvers the PETSc 3.19 files `src/ksp/ksp/impls/cg/cg.c`
+and `src/ksp/ksp/interface/iterativ.c` (default convergence test) were read (BSD-2-Clause, the notice above applies) to
+reproduce PETSc's stopping rules and CG variants; GMRES/FGMRES follow the textbook algorithm with PETSc's documented
+defaults. SLEPc's CISS, PETSc's GAMG and PETSc's GMRES/FGMRES are used only as black boxes through the public API in
+`femsolve/harness` for comparison. The AMG, contour and Jacobi–Davidson code were written from the literature
+(smoothed aggregation: Vaněk, Mandel, Brezina 1996; MIS-2 aggregation; block Sakurai–Sugiura/CIRR: Sakurai & Sugano 2003,
+Ikegami–Sakurai–Nagashima 2010; Jacobi–Davidson: Sleijpen & Van der Vorst 1996, harmonic extraction: Paige–Parlett–Van der Vorst 1995,
+Fokkema–Sleijpen–Van der Vorst 1998). No hypre, PRIMME, BLOPEX, MUMPS or ChASE source has been read.
+
+Licence rule agreed with Paul for the remaining items: read third-party sources only after confirming from the repository
+itself that the licence is MIT, Apache-2.0 or BSD (hypre: MIT/Apache-2.0 dual; PRIMME: BSD-3-Clause), and record the check
+here; never read LGPL or CeCILL code (BLOPEX, MUMPS). **Not yet checked:** nyx's own licence, and each repository above
+(do the check from the repo's `LICENSE` file first).

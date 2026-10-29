@@ -1,9 +1,13 @@
 # femsolve: port status (2026-10-29)
 
-**Scope.** This session worked through the P0 set of `solver_port_list.md` section 13, step 1, and
-stopped where the handoff brief says to stop and report (after V1 + interface + export, and after E1,
-before any P1 item). Everything is in the `femsolve` crate of this repository because the nyx
-repository was not available (the brief leaves its name blank); `NYX_INTEGRATION.md` says how to move it.
+**Scope.** Phase 1 ported the P0 set of `solver_port_list.md` section 13, step 1, and stopped where the
+handoff brief says to stop and report (after V1 + interface + export, and after E1). Paul then
+approved going on ("start implementing the rest"), with three decisions: build our own AMS test
+generator, read only permissively licensed reference sources (papers otherwise), and follow the list
+order (K1 → P2 → E3 → E2 → AMS → T1 → N2/N1 → W1 → L1 → M1/P3/P4 → O1; GPU and MPI as design notes
+only). Phase 2 has done K1, P2, E3 and E2 so far; the table says what remains. Everything is in the
+`femsolve` crate of this repository because the nyx repository was not available (the brief leaves
+its name blank); `NYX_INTEGRATION.md` says how to move it.
 
 **How sure I am.** "Done" below means implemented, tested, and compared with SLEPc where a
 comparison exists; the evidence column says which. Timings are from one 4-vCPU VM and are noisy
@@ -21,7 +25,12 @@ comparison exists; the evidence column says which. Timings are from one 4-vCPU V
 | E1 stage 2 (general complex, Schur reordering) | **done** | tier-A parity on complex symmetric and complex-pencil cases (including 11 restarts / 119 matvecs with complex `B`) |
 | E1 block variant | **done** | finds every copy of degenerate eigenvalues (tests); not comparable with SLEPc (it has no block Krylov–Schur) |
 | E1 "24 modes with a basis of about 60 to 1e-9" | **done on synthetic problems**; **not done on nyx's elastic matrices** | `tests/shift_invert.rs::twenty_four_modes_with_a_basis_of_sixty` (real generalised and complex symmetric, exact spectra). The 24.85 s baseline problem needs nyx. |
-| K1, P1–P5, E2–E5, T1, W1, N1–N3, L1, M1–M2, O1, D1, G1, X1 | **not started** (the brief says to stop after E1 and report first) | see "Next steps" |
+| **K1** CG / COCG / GMRES / FGMRES (real and complex) | **done** | `ksp/` (`Cg`, `Gmres`, PETSc 3.19 defaults and stopping rules), `pc::Jacobi`, `fs-ksp`; harness `run-ksp` against PETSc: GMRES/FGMRES iteration counts equal in 9 of 9 cases (real and complex, left/right PC, MGS/CGS/CGS+refinement); CG and COCG on real SPD agree to 6e-14. PETSc's COCG is broken on complex symmetric systems (stops at iteration 2, real-part sign test), so COCG is compared on real SPD only; `petsc_sign_test` reproduces PETSc if wanted. Results: `harness/results/ksp.jsonl`. |
+| **P2** smoothed-aggregation AMG, shifted-Laplacian helper | **done** (symmetric real and complex-symmetric; `hermitian` option) | `amg.rs`; `tests/amg.rs` (7 tests): operator complexity 1.3–1.6, grid-independent PCG count (9–10), about PETSc GAMG's iterations with 4–6× faster setup; shifted-Laplacian AMG preconditions indefinite Helmholtz about as well as an exact shifted LU. **Not done:** classical/Ruge–Stüben coarsening, non-symmetric problems, parallel setup. |
+| **E3** contour-integral eigensolver (block SS/CIRR) | **done** | `contour.rs`, `fs-contour`, harness `run-contour` vs SLEPc EPSCISS: same eigenvalue sets to 1e-15 (real FE), 4e-12 / 2e-10 (complex pencil), 4 workers 1.8× faster than serial CISS; results independent of worker count. The stochastic count estimate is too noisy on the complex pencil (reported with `count_stderr`; see `LEARNINGS.md` 12). |
+| **E2** Jacobi–Davidson (interior, standard or Hermitian-generalised) | **done**, tier B (no SLEPc/PETSc counterpart in the harness) | `jd.rs`, `tests/jd.rs` (5 tests: B-orthonormal interior modes with exact and with crude preconditioners, non-Hermitian complex-symmetric standard problem with Schur deflation, degenerate pair). JD returns *some* true eigenvalues near the target, not necessarily the exact nearest set: tests check that every value is a true eigenvalue among the nearest dozen. Non-Hermitian *pencils* are rejected (use E3 or Krylov–Schur). Not compared with an external JD implementation (none is wired into the harness). |
+| P1 (AMS), P3, P4, P5, E4, E5, T1, W1, N1–N3, L1, M1–M2, O1, X1 | **not started** | next in the agreed order: AMS (own Nédélec generator), T1, N2/N1, W1, L1, M1/P3/P4, O1 |
+| G1 (GPU), D1 (MPI) | **design notes only, by agreement** (no GPU or cluster here) | |
 
 ## Verification
 
@@ -77,6 +86,12 @@ multi-RHS solve already reads the factors once per call.
   recomputes true residuals, the raw `krylov_schur` does not.
 * Matrices are limited to 32-bit indices (`direct.rs` returns `TooLarge`).
 * Real chip matrices, GPUs, cluster runs, Windows: untested.
+* E2: no thick-restart across *different* targets, no block JD; the inner solver is plain GMRES
+  with the (projected) preconditioner, `inner_its` 12 / `inner_tol` 0.1 are untuned defaults.
+* E3: no adaptive quadrature order or automatic region splitting; count estimate unreliable on
+  non-Hermitian pencils.
+* P2: smoothed aggregation only; strength threshold and smoothing weight were set on 2-D/3-D Laplacian
+  and Helmholtz-type problems, not on elasticity (needs near-null-space vectors, not implemented).
 
 ## Next steps (ordered; each is self-contained)
 
@@ -84,7 +99,7 @@ multi-RHS solve already reads the factors once per call.
 2. **Export one optical and one elastic matrix pair** (needs paul's permission, list item 10) and run `fs-eps` and the SLEPc harness on them; this also settles the open "MKL PARDISO / threaded MUMPS" question when added as a ShiftedSolver backend.
 3. **Check nyx's block solves for the faer parallel multi-RHS cliff** (`LEARNINGS.md` item 1) and for the dirty-vector-state slowdown (item 3). Both can silently cost multiples on an AVX-512 machine and both are minutes to test.
 4. **Measure rayon wake-up on paul's Windows machine** (an empty broadcast, as in the review's pitfall 2) before trusting the `parallel` feature there; `PAR_MIN_ELEMS` in `par.rs` is a guess from the VM.
-5. **KSP half of V1 and item K1** (COCG first, then GMRES/FGMRES): the harness has no linear-solver driver yet; `rsolvers/bench/c/petsc_ksp.c` is the pattern, with complex support to add.
+5. ~~KSP half of V1 and item K1~~ done in phase 2 (`harness/c/petsc_ksp.c`, `run.py run-ksp`).
 6. **Block default and `ncv` rule.** Blocks helped real SPD 3-D problems (1.7 ×) and hurt a slow complex one (3 ×): either keep 1 or add a heuristic after trying it on nyx models.
 7. **Optional performance:** runtime-dispatched AVX2 versions of `dots_block` (≤ 5 % of an eigensolve); fill-reducing ordering experiment S2 (faer's complex 2-D solves are ~25 % slower than PETSc's per vector); reuse solve scratch buffers across calls (allocation per solve is small but nonzero).
 8. **Breadth set:** SuiteSparse matrices were unreachable (`sparse.tamu.edu` returned 403 from the sandbox); someone must upload a few or change the network allowlist.

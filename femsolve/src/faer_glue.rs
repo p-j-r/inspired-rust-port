@@ -157,6 +157,12 @@ pub(crate) fn generalized_eig_c64(a: &Dense<C64>, b: &Dense<C64>) -> Result<(Vec
     if !a.is_finite() || !b.is_finite() {
         return Err(DenseError::NonFinite);
     }
+    if n == 1 {
+        // faer 0.24.4's generalised eigensolver panics on a 1×1 pencil (scratch sizing), so the
+        // trivial case is handled here.
+        let lam = if b[(0, 0)].norm() == 0.0 { C64::new(f64::NAN, f64::NAN) } else { a[(0, 0)] / b[(0, 0)] };
+        return Ok((vec![lam], Dense::identity(1)));
+    }
     let fa = Mat::<faer::c64>::from_fn(n, n, |i, j| a[(i, j)]);
     let fb = Mat::<faer::c64>::from_fn(n, n, |i, j| b[(i, j)]);
     let g = fa.generalized_eigen(&fb).map_err(|_| DenseError::NoConvergence);
@@ -170,4 +176,29 @@ pub(crate) fn generalized_eig_c64(a: &Dense<C64>, b: &Dense<C64>) -> Result<(Vec
         })
         .collect();
     Ok((lam, Dense::from_fn(n, n, |i, j| u[(i, j)])))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generalized_eig_handles_tiny_pencils() {
+        for n in 1..=5usize {
+            let a = Dense::from_fn(n, n, |i, j| {
+                C64::new((i + 2 * j) as f64 + if i == j { 3.0 } else { 0.0 }, (i as f64 - j as f64) * 0.1)
+            });
+            let b =
+                Dense::from_fn(n, n, |i, j| if i == j { C64::new(1.0 + i as f64, 0.2) } else { C64::new(0.1, 0.0) });
+            let (lam, x) = generalized_eig_c64(&a, &b).unwrap();
+            for k in 0..n {
+                // A x = λ B x
+                for i in 0..n {
+                    let ax = (0..n).fold(C64::ZERO, |s, j| s + a[(i, j)] * x[(j, k)]);
+                    let bx = (0..n).fold(C64::ZERO, |s, j| s + b[(i, j)] * x[(j, k)]);
+                    assert!((ax - lam[k] * bx).norm() < 1e-10 * (1.0 + ax.norm()), "n={n} k={k}");
+                }
+            }
+        }
+    }
 }
