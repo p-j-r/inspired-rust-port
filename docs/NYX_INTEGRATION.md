@@ -17,6 +17,9 @@ unverified until it has been checked against the code.
 | `eps/` | block Krylov–Schur | `eigen.rs` (block shift-and-invert Arnoldi) | replace after the validation below |
 | `problem.rs` | `ShiftInvertEigenSolver` trait: "eigenpairs near a shift" | none (models call `eigen.rs` directly) | the interface models should call |
 | `mm.rs`, `bundle.rs`, `bin/fs_*.rs` | Matrix Market export, problem bundles, CLIs | none | use to export matrices (item V1) |
+| `ksp/`, `pc.rs`, `ilu.rs`, `schwarz.rs`, `fieldsplit.rs`, `amg.rs`, `ams.rs`, `mixed.rs`, `bsr.rs` | Krylov solvers (CG, COCG, GMRES, FGMRES, MINRES, BiCGStab, COCR, IDR(s)), preconditioners (Jacobi, ILU(k)/ILUT/IC, additive/restricted Schwarz, field-split/Schur, smoothed-aggregation AMG, AMS for H(curl)), mixed-precision LU, block/symmetric CSR | `pcg.rs`/`amg.rs`/`lobpcg.rs`, FEM drivers | new code behind `LinearOperator`/`Preconditioner`; replace nyx's own AMG-PCG only after the comparison in `STATUS.md` item 2; AMS needs the discrete gradient and edge vectors from `emw3d.rs` |
+| `jd.rs`, `lobpcg.rs`, `chebfsi.rs`, `contour.rs`, `nep.rs`, `toar.rs`, `sens.rs` | interior (JD), lowest (LOBPCG, Chebyshev filtering) and region (contour, Beyn) eigensolvers, nonlinear and quadratic eigenproblems, eigenvalue derivatives and mode tracking | `eigen.rs`, `lobpcg.rs`, quadratic linearisations | alternatives selectable per model once validated on the exported matrices |
+| `ts/`, `sweep.rs`, `snes.rs`, `opt.rs`, `expm.rs` | time steppers (BDF, Newmark/gen-α, θ, Rosenbrock), reduced-order frequency sweeps, nonlinear solvers (Newton, JFNK, Anderson), optimisers (L-BFGS, CG, MMA), matrix-exponential action | transient and sweep code in `femcore` | use when transient, dispersive or optimisation work starts |
 | `harness/` | SLEPc comparison (C driver, Python runner) | none | runs on Linux/WSL next to the exported bundles |
 
 ## faer version

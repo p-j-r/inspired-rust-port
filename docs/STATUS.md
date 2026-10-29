@@ -48,7 +48,7 @@ comparison exists; the evidence column says which. Timings are from one 4-vCPU V
 | **S3** mixed-precision factorisation with iterative refinement | **done** (LU, sequential-safe, falls back automatically) | `mixed.rs`: `MixedPrecisionLu` (f32 / Complex<f32> LU of `A − σB`, double-precision residual refinement, contraction test, lazy double-precision fallback; implements `ShiftedSolver`). `tests/mixed.rs` (4 tests): solutions equal to double-precision LU to 4e-15 (real convection–diffusion, 3 refinement steps per solve) and 1e-11 (complex pencil), a shift 1e-9 from an eigenvalue is detected and handled by the fallback with a residual no worse than double precision's, a shift-and-invert eigensolve gives the same eigenvalues (1 fallback in 30 solves). **Measured (3-D, 64 000 unknowns, LU): factorisation 4.1 s vs 5.7 s (1.4× faster), one solve with refinement 0.19 s vs 0.12 s (1.5× slower); factor memory is half in theory (not measured).** It pays when factorisations dominate (contour, sweeps, transient refactorisation) and when memory is the limit, not for eigensolves with hundreds of solves per factorisation. **Not done:** Cholesky variant, single-precision *Krylov* (GMRES-IR with an f32 factor as preconditioner), automatic choice between the two solvers. |
 | **S2** fill-reducing ordering experiment | **done as an experiment, adopted for Cholesky** | `ordering.rs`: graph nested dissection (BFS level-set separators, no multilevel refinement) and `FillOrdering::{Amd, NestedDissection, Auto}` in `ShiftedFactorization` (Cholesky path only: faer's sparse LU does not take a user ordering). **Auto** (default) runs both symbolic analyses and keeps the one with fewer factor non-zeros. Measured on 3-D 40³ (64 000 unknowns, Cholesky): factor non-zeros **26.5 M → 18.7 M (−30 %)**, numeric factorisation **1.40 s → 0.58 s sequential (2.4× faster)**, one solve 0.052 s → 0.040 s; on 2-D grids ND has *more* fill than AMD (2.0 M vs 1.43 M for 200²), so Auto keeps AMD there. `tests/ordering.rs` (2 tests + timing study): identical solutions for all three orderings; ND smaller on 3-D and Auto picks the smaller. **Not measured / not done:** METIS-quality multilevel partitioning (expected to improve further), the LU path (complex symmetric PML matrices: needs an ordering hook in faer or a different LU), 3-D vector problems with 3×3 blocks (ordering on the block graph), effect on the real elastic matrices (needs the nyx export). |
 | **not done** (see "Next steps" and `docs/LEARNINGS.md`): S4 low-rank (BLR/HSS) factorisation, K1 extras (QMR, GCRO-DR recycling), ADS for H(div), M2 matrix-free high-order operators, PETSc `TAO`/`SNES`/`TS` parity runs, NLEIGS, MPI/GPU (design notes only) | | the items need data or hardware not available here, or are research-grade (see each row's "Not done") |
-| G1 (GPU), D1 (MPI) | **design notes only, by agreement** (no GPU or cluster here) | |
+| G1 (GPU), D1 (MPI) | **design notes only, by agreement** (no GPU or cluster here) | `docs/DESIGN_GPU_MPI.md` |
 
 ## Verification
 
@@ -61,7 +61,14 @@ Acceptance tiers (from the review in the handoff):
   tolerance. Used for degenerate spectra (`lap2d`, `lap3d`) and for the 100-restart non-normal
   case where rounding amplification makes counts unreproducible (128 vs 100 restarts, eigenvalues
   to 3e-10). 3 of 3 pass. Reasons and numbers: `LEARNINGS.md` items 5 and 6.
-* **Tier C**: no adaptive/time-dependent solver was ported.
+* **Tier A, phase 2** (identical iteration counts and residual histories against PETSc 3.19, `harness/run.py run-ksp`): GMRES/FGMRES 9 of 9
+  (`results/ksp.jsonl`); CG/COCG on SPD; ILU(k)/ICC(k) 7 of 7, MINRES+ICC, BiCGStab+ILU, additive/restricted Schwarz 4 of 4
+  (`results/precond.jsonl`); the contour eigensolver against SLEPc `EPSCISS` to 1e-15 (real) / 1e-10 (complex) (`results/contour.jsonl`). **Tier B**: rounding-chaotic
+  iterations (MINRES on indefinite matrices, BiCGStab with weak preconditioners: iteration counts within 5 %, true residual below tolerance), and everything without a PETSc/SLEPc counterpart
+  (JD, AMS, TOAR, Beyn, ROMs, optimisers, LOBPCG, Chebyshev filtering), which is checked against closed forms, dense references or finite differences.
+* **Tier C** (adaptive / time-dependent): variable-step BDF 1–5, Newmark/generalised-α, θ-method and Rosenbrock are checked against closed-form solutions: measured convergence orders
+  (BDF1 2.00, BDF2 4.00 error ratios per halving; Newmark and gen-α 2; ROS2 2), error versus tolerance, energy conservation and high-frequency damping (`tests/ts.rs`). No PETSc `TS` comparison (step sequences need not match).
+* **Test inventory**: about 190 tests in 30 files (`cargo test --release`; all pass also with `--features parallel`), clippy clean with `--all-targets`.
 * Analytic tests: 1-D Laplacian, gauge-transformed (complex Hermitian) Laplacian, FE generalised
   spectrum, `L + iγI` (exact complex-symmetric spectrum), a mildly non-normal tridiagonal, degenerate
   2-D grids, forced breakdown, 24 modes.
@@ -94,8 +101,9 @@ multi-RHS solve already reads the factors once per call.
 
 ## Known limitations of what was ported
 
-* Shift-and-invert only. No harmonic extraction, no purification (SLEPc's default for generalised
-  Hermitian problems; it changes returned vectors, not restart logic), no polynomial filtering.
+* The Krylov–Schur solver (E1) is shift-and-invert only. No harmonic extraction, no purification (SLEPc's default for generalised
+  Hermitian problems; it changes returned vectors, not restart logic). Polynomial filtering exists separately (`chebfsi.rs`, standard problems only);
+  matrix-free interior eigenvalues are Jacobi–Davidson (`jd.rs`).
 * Real *non-symmetric* operators are rejected (Schur form with 2×2 blocks is not implemented);
   promote to complex.
 * Hermitian kind assumes the shifted operator is self-adjoint in the inner product used; this is not checked.
@@ -113,12 +121,15 @@ multi-RHS solve already reads the factors once per call.
 
 ## Next steps (ordered; each is self-contained)
 
-1. **Get the nyx repository name** and follow `NYX_INTEGRATION.md`. Until then the whole port is unverified against nyx's real operators.
-2. **Export one optical and one elastic matrix pair** (needs paul's permission, list item 10) and run `fs-eps` and the SLEPc harness on them; this also settles the open "MKL PARDISO / threaded MUMPS" question when added as a ShiftedSolver backend.
-3. **Check nyx's block solves for the faer parallel multi-RHS cliff** (`LEARNINGS.md` item 1) and for the dirty-vector-state slowdown (item 3). Both can silently cost multiples on an AVX-512 machine and both are minutes to test.
+1. **Get the nyx repository name** and follow `NYX_INTEGRATION.md`. Until then every module is validated on synthetic problems with known answers, not on nyx's operators.
+2. **Export one optical, one elastic and one Maxwell (Nédélec) system** (needs paul's permission, list item 10): the matrices (`A`, `B`), and for AMS the discrete gradient and edge vectors. Run `fs-eps`, `fs-ksp`, `fs-contour` and the SLEPc/PETSc harness on them.
+   This also settles which of the new preconditioners (AMG, AMS, ILU, Schwarz, field-split) pays on the real problems.
+3. **Check nyx's block solves for the faer parallel pitfalls** (`LEARNINGS.md` items 1, 3 and 24): the multi-RHS solve cliff, the dirty-vector-state slowdown after a GEMM, and the parallel numeric Cholesky that was slower than sequential with nested dissection.
 4. **Measure rayon wake-up on paul's Windows machine** (an empty broadcast, as in the review's pitfall 2) before trusting the `parallel` feature there; `PAR_MIN_ELEMS` in `par.rs` is a guess from the VM.
-5. ~~KSP half of V1 and item K1~~ done in phase 2 (`harness/c/petsc_ksp.c`, `run.py run-ksp`).
-6. **Block default and `ncv` rule.** Blocks helped real SPD 3-D problems (1.7 ×) and hurt a slow complex one (3 ×): either keep 1 or add a heuristic after trying it on nyx models.
-7. **Optional performance:** runtime-dispatched AVX2 versions of `dots_block` (≤ 5 % of an eigensolve); fill-reducing ordering experiment S2 (faer's complex 2-D solves are ~25 % slower than PETSc's per vector); reuse solve scratch buffers across calls (allocation per solve is small but nonzero).
+5. **Integration of the new pieces behind `ShiftInvertEigenSolver`-like traits** where nyx wants them: JD/LOBPCG/contour/TOAR/Beyn have their own entry points today (`jacobi_davidson`, `lobpcg`, `contour_eigs`, `toar_shift_invert`, `beyn_contour`).
+6. **Use the nested-dissection finding**: for 3-D real SPD problems `FillOrdering::Auto` is already the default; try ND with the sequential factorisation policy (`LEARNINGS.md` 24) on nyx's elastic matrices, and look for an LU route (complex symmetric PML) that accepts a user ordering.
+7. **Block default and `ncv` rule.** Blocks helped real SPD 3-D problems (1.7 ×) and hurt a slow complex one (3 ×): either keep 1 or add a heuristic after trying it on nyx models.
 8. **Breadth set:** SuiteSparse matrices were unreachable (`sparse.tamu.edu` returned 403 from the sandbox); someone must upload a few or change the network allowlist.
-9. **Questions still open for paul** (port list section 11, none answered in this session): GPU model, largest 3-D model and RAM, typical/largest mode counts, interior vs lowest modes, frequency-dependent materials, transient work, optimisation plans, cluster access, accuracy targets, chip-matrix export permission.
+9. **Remaining list items not done**, with the reason: QMR and GCRO-DR (no consumer yet), ADS (H(div) only needed for div-conforming formulations), M2 matrix-free high-order operators (needs the element kernels of nyx), S4 low-rank factorisations (research-grade), NLEIGS (needs a rational interpolation layer on top of `nep.rs`), PETSc `SNES`/`TAO`/`TS` parity runs (drivers not written), G1/D1 (design notes only: `DESIGN_GPU_MPI.md`).
+10. **Questions still open for paul** (port list section 11, none answered in this session): GPU model, largest 3-D model and RAM, typical/largest mode counts, interior vs lowest modes, frequency-dependent materials, transient work, optimisation plans, cluster access, accuracy targets, chip-matrix export permission.
+    Their answers decide which of the finished modules are worth integrating first (frequency-dependent materials → `nep.rs`/`sweep.rs`; transient work → `ts/`; optimisation → `opt.rs`/`sens.rs`; cluster → `schwarz.rs`/D1).
