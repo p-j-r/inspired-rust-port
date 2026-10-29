@@ -46,7 +46,7 @@ Acceptance tiers (from the review in the handoff):
 
 | Case | Rust (warm, incl. numeric factorisation) | SLEPc (warm, factorisation reused) | Cold (all-in) |
 |---|---|---|---|
-| 1-D problems, n = 2 000 – 20 000, real/complex | 0.5 – 1.2 × | = 1 | 0.7 – 1.2 × |
+| 1-D problems, n = 2 000 – 20 000, real/complex | 0.5 – 1.2 × | = 1 | 0.7 – 1.3 × |
 | direct Hermitian (no shift), 178 restarts | 0.43 × | = 1 | n/a |
 | complex pencil, n = 3 000 | 1.13 × | = 1 | 1.05 × |
 | complex pencil with absorbing layer, n = 40 000 (128 vs 100 restarts) | 1.85 × (1.45 × per matvec) | = 1 | 1.8 × |
