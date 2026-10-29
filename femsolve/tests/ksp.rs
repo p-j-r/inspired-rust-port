@@ -346,3 +346,84 @@ fn bicgstab_solves_nonsymmetric_real_and_complex_symmetric_systems() {
     let err = xc.iter().zip(&exact).map(|(p, q)| (*p - *q).norm_sqr()).sum::<f64>().sqrt() / norm(&exact);
     assert!(err < 1e-6, "{err}");
 }
+
+// ---- COCR and IDR(s) -----------------------------------------------------------------------
+
+#[test]
+fn cocr_solves_complex_symmetric_systems() {
+    use femsolve::ilu::Ic;
+    use femsolve::ksp::{Cocr, CocrOptions};
+    let a = helmholtz(40, 40, 2.0, 0.6);
+    let n = a.nrows();
+    let b = random_vector::<C64>(n, 3);
+    let tol = Tolerances { rtol: 1e-9, max_it: 3000, ..Default::default() };
+    let exact = direct_solution(&a, &b);
+    // unpreconditioned and with a complex-symmetric incomplete Cholesky
+    for (name, info, x) in [
+        {
+            let mut x = vec![C64::ZERO; n];
+            let i = Cocr::new(CocrOptions { tol, record_history: true }).solve(&a, &Identity, &b, &mut x);
+            ("none", i, x)
+        },
+        {
+            let ic = Ic::ic_k(&a, 1, false);
+            let mut x = vec![C64::ZERO; n];
+            let i = Cocr::new(CocrOptions { tol, record_history: true }).solve(&a, &ic, &b, &mut x);
+            ("IC(1)", i, x)
+        },
+    ] {
+        assert!(info.reason.is_converged(), "{name}: {:?} after {}", info.reason, info.iterations);
+        let err = x.iter().zip(&exact).map(|(p, q)| (*p - *q).norm_sqr()).sum::<f64>().sqrt() / norm(&exact);
+        assert!(err < 1e-6, "{name}: {err}");
+        eprintln!("COCR {name}: {} iterations", info.iterations);
+    }
+}
+
+#[test]
+fn idrs_solves_nonsymmetric_and_complex_systems_for_several_shadow_dimensions() {
+    use femsolve::ilu::Ilu;
+    use femsolve::ksp::{Idrs, IdrsOptions};
+    let tol = Tolerances { rtol: 1e-9, max_it: 4000, ..Default::default() };
+    let ac = helmholtz(30, 30, 2.0, 0.5);
+    let bc = random_vector::<C64>(900, 6);
+    let exact = direct_solution(&ac, &bc);
+    let mut counts = Vec::new();
+    for s in [1usize, 2, 4, 8] {
+        let mut x = vec![C64::ZERO; 900];
+        let info = Idrs::new(IdrsOptions { tol, s, ..Default::default() }).solve(&ac, &Ilu::ilu_k(&ac, 1), &bc, &mut x);
+        assert!(info.reason.is_converged(), "s = {s}: {:?} after {}", info.reason, info.iterations);
+        let err = x.iter().zip(&exact).map(|(p, q)| (*p - *q).norm_sqr()).sum::<f64>().sqrt() / norm(&exact);
+        assert!(err < 1e-6, "s = {s}: {err}");
+        counts.push((s, info.iterations, info.matvecs));
+    }
+    eprintln!("IDR(s) on complex Helmholtz + ILU(1): (s, iterations, matvecs) = {counts:?}");
+    // real nonsymmetric, no preconditioner
+    let n = 30 * 30;
+    let mut t = Vec::new();
+    for j in 0..30 {
+        for i in 0..30 {
+            let p = j * 30 + i;
+            t.push((p, p, 4.0));
+            if i > 0 {
+                t.push((p, p - 1, -1.8));
+            }
+            if i + 1 < 30 {
+                t.push((p, p + 1, -0.2));
+            }
+            if j > 0 {
+                t.push((p, p - 30, -1.0));
+            }
+            if j + 1 < 30 {
+                t.push((p, p + 30, -1.0));
+            }
+        }
+    }
+    let a = Csr::from_triplets(n, n, &t).unwrap();
+    let b = random_vector::<f64>(n, 4);
+    let mut x = vec![0.0; n];
+    let info = Idrs::new(IdrsOptions { tol, s: 4, ..Default::default() }).solve(&a, &Identity, &b, &mut x);
+    assert!(info.reason.is_converged(), "{:?}", info.reason);
+    let mut ax = vec![0.0; n];
+    a.spmv(&x, &mut ax);
+    assert!(ax.iter().zip(&b).map(|(p, q)| (p - q).powi(2)).sum::<f64>().sqrt() < 1e-7 * norm(&b));
+}
