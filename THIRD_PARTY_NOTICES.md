@@ -106,7 +106,7 @@ defaults. SLEPc's CISS, PETSc's GAMG and PETSc's GMRES/FGMRES are used only as b
 `femsolve/harness` for comparison. The AMG, contour and Jacobi–Davidson code were written from the literature
 (smoothed aggregation: Vaněk, Mandel, Brezina 1996; MIS-2 aggregation; block Sakurai–Sugiura/CIRR: Sakurai & Sugano 2003,
 Ikegami–Sakurai–Nagashima 2010; Jacobi–Davidson: Sleijpen & Van der Vorst 1996, harmonic extraction: Paige–Parlett–Van der Vorst 1995,
-Fokkema–Sleijpen–Van der Vorst 1998; AMS: Hiptmair & Xu 2007, Kolev & Vassilevski 2009; time stepping: Shampine & Reichelt 1997, Chung & Hulbert 1993, Verwer et al. 1999; nonlinear eigenproblems: Neumaier 1985, Beyn 2012, Asakura et al. 2009; TOAR: Lu, Su & Bai 2016). No hypre, PRIMME, BLOPEX, MUMPS or ChASE source has been read.
+Fokkema–Sleijpen–Van der Vorst 1998; AMS: Hiptmair & Xu 2007, Kolev & Vassilevski 2009; time stepping: Shampine & Reichelt 1997, Chung & Hulbert 1993, Verwer et al. 1999; nonlinear eigenproblems: Neumaier 1985, Beyn 2012, Asakura et al. 2009; TOAR: Lu, Su & Bai 2016; nonlinear solvers: Eisenstat & Walker 1996, Walker & Ni 2011, Brown & Saad 1990). No hypre, PRIMME, BLOPEX, MUMPS or ChASE source has been read.
 
 Licence rule agreed with Paul for the remaining items: read third-party sources only after confirming from the repository
 itself that the licence is MIT, Apache-2.0 or BSD (hypre: MIT/Apache-2.0 dual; PRIMME: BSD-3-Clause), and record the check

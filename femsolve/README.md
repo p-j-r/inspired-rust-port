@@ -18,6 +18,7 @@ measured, and [`../docs/NYX_INTEGRATION.md`](../docs/NYX_INTEGRATION.md) for how
 | `amg` | smoothed-aggregation **AMG** for real and complex-symmetric matrices, shifted-Laplacian helper for Helmholtz/PML |
 | `contour` | **contour-integral** eigensolver (block Sakurai–Sugiura / CIRR), `fs-contour` |
 | `jd` | **Jacobi–Davidson** with harmonic/standard extraction, locking and Schur deflation for interior eigenvalues |
+| `snes` | **nonlinear solvers**: Newton (line search, Jacobian lag), JFNK, Picard, Anderson |
 | `sweep` | **frequency sweeps** by greedy reduced-order models of `Σ f_j(ω) A_j x = b` |
 | `nep`, `toar` | **nonlinear eigenproblems** (residual inverse iteration, Beyn contour method) and the **quadratic eigenproblem** (TOAR with compressed Krylov–Schur restart) |
 | `ts` | time steppers: variable-step **BDF 1–5**, **Newmark / generalised-α**, θ-method, **Rosenbrock ROS2** |

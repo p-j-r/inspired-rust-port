@@ -264,3 +264,21 @@ With `--features parallel` the same kernels reach 20–40 GB/s effective on 4 vC
   (this stopped the greedy loop at 1.5e-7 instead of 1e-8). The threshold is now 1e-13 after two Gram–Schmidt passes.
 * Residual-based certification says the *residual* is below tolerance, not the error; at a resonance the error can be
   `‖T⁻¹‖` times larger (1e-9 output error against 1e-8 residual in the modal test, both fine because of the damping).
+
+## 18. Nonlinear solvers (L1)  (measured)
+
+* **JFNK must use right preconditioning.** With left-preconditioned GMRES the forcing tolerance applied to the
+  *preconditioned* residual, and with an AMG preconditioner the resulting steps were not descent directions: the
+  line search failed at the second iteration on the Bratu problem. Right preconditioning (true linear residual)
+  fixed it: 5 Newton iterations, 25 Krylov iterations in total.
+* A fixed preconditioner is only as good as the Jacobian it came from: LU(J(x₀)) at `x₀ = 0` (where the cubic term vanishes)
+  was *worse* than none (252 vs 204 Krylov iterations); built at `0.6 u*` it cut them to 19.
+* PETSc's `snes_stol` test reports convergence when the step is tiny even if the residual is large. Here a tiny step with
+  a large residual is `DivergedStagnation`. In the arctan example the full-step iteration blows up to 1e150, where the Jacobian underflows to
+  zero; the old test reported "converged by step size".
+* Exact-Newton Armijo (`‖F_new‖² ≤ (1 − 2cα)‖F‖²`) with quadratic interpolation needs a few lines but is sensitive to the
+  clamping of the interpolated step to `[0.1α, 0.5α]`; the arctan case needs it.
+* Jacobian lag 3 gave 12 iterations and 4 factorisations against 7 and 7: worth it when a factorisation costs more than
+  ~2 residual evaluations, i.e. nearly always for 3-D problems.
+* Anderson acceleration with depth 6 turned a Picard iteration that did not reach 1e-10 in 3000 steps into 33 steps; the least-squares problem is
+  solved by modified Gram–Schmidt with dropping of dependent columns (normal equations would square the condition number).
