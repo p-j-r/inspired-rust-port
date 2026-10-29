@@ -68,7 +68,7 @@ Acceptance tiers (from the review in the handoff):
   (JD, AMS, TOAR, Beyn, ROMs, optimisers, LOBPCG, Chebyshev filtering), which is checked against closed forms, dense references or finite differences.
 * **Tier C** (adaptive / time-dependent): variable-step BDF 1–5, Newmark/generalised-α, θ-method and Rosenbrock are checked against closed-form solutions: measured convergence orders
   (BDF1 2.00, BDF2 4.00 error ratios per halving; Newmark and gen-α 2; ROS2 2), error versus tolerance, energy conservation and high-frequency damping (`tests/ts.rs`). No PETSc `TS` comparison (step sequences need not match).
-* **Test inventory**: about 190 tests in 30 files (`cargo test --release`; all pass also with `--features parallel`), clippy clean with `--all-targets`.
+* **Test inventory**: 175 tests (+2 ignored timing studies) in 23 integration-test files and the library unit tests (`cargo test --release`; all pass also with `--features parallel`), clippy clean with `--all-targets`.
 * Analytic tests: 1-D Laplacian, gauge-transformed (complex Hermitian) Laplacian, FE generalised
   spectrum, `L + iγI` (exact complex-symmetric spectrum), a mildly non-normal tridiagonal, degenerate
   2-D grids, forced breakdown, 24 modes.
