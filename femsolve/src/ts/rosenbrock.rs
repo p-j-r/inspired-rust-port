@@ -13,8 +13,9 @@
 //!
 //! Error control by **step doubling**: one step of `h` against two of `h/2` (Jacobians at `y_n` and at
 //! the midpoint); the doubled result is kept and `‖y_{h/2,2} − y_h‖ / 3` is the local error estimate,
-//! `h_new = h · clamp(0.9 · err^{-1/3}, 0.2, 5)`. Three factorisations per step (two shifts of the
-//! first Jacobian share a symbolic analysis); an embedded estimator would cut that, see
+//! `h_new = h · clamp(0.9 · err^{-1/3}, 0.2, 5)`. Three numeric factorisations per step, all on one
+//! symbolic analysis per Jacobian object (values are replaced with
+//! [`ShiftedFactorization::replace_matrices`]); an embedded estimator would cut that, see
 //! `docs/STATUS.md`.
 
 use super::{Solution, TsError, TsStats, scaled_rms};
@@ -120,6 +121,8 @@ pub fn rosenbrock_solve<T: FaerScalar>(
     let mut out_t = vec![t0];
     let mut out_y = vec![y.clone()];
     let mut taken = 0usize;
+    // two persistent factorisations: values are replaced every step, the symbolic analysis is kept
+    let (mut fac0, mut fac1): (Option<ShiftedFactorization<T>>, Option<ShiftedFactorization<T>>) = (None, None);
     let (mut y_full, mut y_half, mut y_two) = (vec![T::ZERO; n], vec![T::ZERO; n], vec![T::ZERO; n]);
     while t < t_end - 1e-13 * span {
         taken += 1;
@@ -131,10 +134,15 @@ pub fn rosenbrock_solve<T: FaerScalar>(
             return Err(TsError::StepTooSmall(t));
         }
         let j0 = jac(&y);
-        let mut fac0 = ShiftedFactorization::new(m, Some(&j0), opts.definiteness)?;
+        let fac0 = match fac0.as_mut() {
+            Some(f) => {
+                f.replace_matrices(m, Some(&j0))?;
+                f
+            }
+            None => fac0.insert(ShiftedFactorization::new(m, Some(&j0), opts.definiteness)?),
+        };
         if opts.fixed_step {
-            st.step(&mut fac0, h, &y, &mut y_full)?;
-            st.account(&fac0);
+            st.step(fac0, h, &y, &mut y_full)?;
             y.copy_from_slice(&y_full);
             t += h;
             st.stats.steps += 1;
@@ -142,13 +150,17 @@ pub fn rosenbrock_solve<T: FaerScalar>(
             out_y.push(y.clone());
             continue;
         }
-        st.step(&mut fac0, h, &y, &mut y_full)?;
-        st.step(&mut fac0, 0.5 * h, &y, &mut y_half)?;
-        st.account(&fac0);
+        st.step(fac0, h, &y, &mut y_full)?;
+        st.step(fac0, 0.5 * h, &y, &mut y_half)?;
         let j1 = jac(&y_half);
-        let mut fac1 = ShiftedFactorization::new(m, Some(&j1), opts.definiteness)?;
-        st.step(&mut fac1, 0.5 * h, &y_half, &mut y_two)?;
-        st.account(&fac1);
+        let fac1 = match fac1.as_mut() {
+            Some(f) => {
+                f.replace_matrices(m, Some(&j1))?;
+                f
+            }
+            None => fac1.insert(ShiftedFactorization::new(m, Some(&j1), opts.definiteness)?),
+        };
+        st.step(fac1, 0.5 * h, &y_half, &mut y_two)?;
         let diff: Vec<T> = y_two.iter().zip(&y_full).map(|(&a, &b)| (a - b).scale(1.0 / 3.0)).collect();
         let err = scaled_rms(&diff, &y_two, opts.rtol, opts.atol);
         if err.is_finite() && err <= 1.0 {
@@ -162,6 +174,9 @@ pub fn rosenbrock_solve<T: FaerScalar>(
         }
         let factor = if err.is_finite() { (0.9 * err.max(1e-10).powf(-1.0 / 3.0)).clamp(0.2, 5.0) } else { 0.2 };
         h *= factor;
+    }
+    for f in [&fac0, &fac1].into_iter().flatten() {
+        st.account(f);
     }
     st.stats.factorizations = st.numeric;
     st.stats.symbolic_analyses = st.symbolic;

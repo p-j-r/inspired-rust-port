@@ -269,6 +269,23 @@ impl<T: FaerScalar> ShiftedFactorization<T> {
         })
     }
 
+    /// Replaces the *values* of `A` (and `B`) without redoing the symbolic analysis, for matrices
+    /// that change every step (Jacobians, `T(z) = Σ f_j(z) A_j`). The sparsity pattern of the union
+    /// must be identical to the one the object was built with (otherwise `InvalidArgument`);
+    /// [`ShiftedSolver::set_shift`] must be called again before solving.
+    pub fn replace_matrices(&mut self, a: &Csr<T>, b: Option<&Csr<T>>) -> Result<(), SolverError> {
+        let full = assemble(a, b, false)?;
+        if full.col_ptr != self.full.col_ptr || full.row_idx != self.full.row_idx {
+            return Err(SolverError::InvalidArgument("sparsity pattern differs from the one analysed"));
+        }
+        if self.definiteness == Definiteness::PositiveDefinite {
+            self.lower = Some(assemble(a, b, true)?);
+        }
+        self.full = full;
+        self.have = Used::None;
+        Ok(())
+    }
+
     fn pattern(asm: &Assembled<T>, n: usize) -> SymbolicSparseColMatRef<'_, u32> {
         SymbolicSparseColMatRef::new_checked(n, n, &asm.col_ptr, None, &asm.row_idx)
     }

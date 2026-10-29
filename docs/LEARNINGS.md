@@ -228,3 +228,24 @@ With `--features parallel` the same kernels reach 20–40 GB/s effective on 4 vC
   unit cube takes 1 s vs 50 ms per solve, as in item 8.
 * `FactorStats::solves` is not updated by `solve_block_in_place(&self)` (shared reference), so per-solve counters and
   times read zero; use wall time minus factorisation time.
+
+## 16. Nonlinear and quadratic eigenproblems (N2, N1)  (measured)
+
+* Beyn's method in the block-Hankel form needs *no* projected nonlinear problem: all post-processing is small
+  dense (SVD of the `Kℓ × Kℓ` Hankel matrix, one dense eigenproblem). With 48–64 nodes the eigenvalues in the
+  region came out to 1e-7 or better even though the nearest outside eigenvalues were 0.02–0.03 from the contour
+  (relative to a contour radius of 0.15–0.2). The `ζ = (z − c)/ρ` scaling of the moments is what keeps the Hankel
+  matrix usable.
+* A shift that sits on an eigenvalue makes `T(σ)` numerically singular, and residual inverse iteration then gets *worse*
+  (residual 4e-12 → 1e-5). The routine returns the best iterate; polish with `σ` slightly off the eigenvalue.
+* `T(z)` is assembled by `axpby` over the union pattern (explicit zeros kept), so every node and every Rosenbrock
+  Jacobian has the same pattern and `ShiftedFactorization::replace_matrices` avoids all but the first symbolic analysis.
+* **TOAR compressed restart pitfalls.** (1) `Q` can need more than `ncv + 2` columns after a restart (here 53 for 50
+  steps; bound `2·ncv + 2`), so `Q` must be growable and the coefficient columns sized for the bound: with a fixed
+  capacity, new directions were silently dropped and the *estimates said converged while the true residual was 2e-3*.
+  Always check the explicit residual. (2) Within a cycle `r₁ = σ r₂` exactly (because `w₁ = x₂ + σ w₂` and `x₂ ∈ range Q`),
+  so each step adds one column, which is where the memory halving comes from.
+* The linearised Krylov–Schur run spends most of its time in a 2n LU and its solves; TOAR factorises `P(σ)` (size n)
+  but needs more orthogonalisation per step in the compressed space, which cancelled the gain on the 2-D test: do not
+  expect speed-ups, expect memory.
+* faer's `generalized_eigen` on small pencils is fine (≤ 50×50); it was only slow for ~300×300 pencils with a huge zero/infinite cluster (item 14).

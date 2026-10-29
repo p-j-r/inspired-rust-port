@@ -21,11 +21,13 @@ pub mod ksp;
 pub mod linop;
 pub mod maxwell;
 pub mod mm;
+pub mod nep;
 pub mod par;
 pub mod pc;
 pub mod problem;
 pub mod rng;
 pub mod scalar;
+pub mod toar;
 pub mod ts;
 pub mod vecops;
 

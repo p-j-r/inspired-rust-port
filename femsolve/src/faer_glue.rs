@@ -146,9 +146,38 @@ pub(crate) fn thin_svd_c64(data: &[C64], n: usize, cols: usize) -> Result<(Vec<f
     Ok((s, out))
 }
 
+/// `(singular values, U, V)` of [`thin_svd_uv_c64`], matrices column-major.
+pub(crate) type SvdUv = (Vec<f64>, Vec<C64>, Vec<C64>);
+
+/// Thin SVD like [`thin_svd_c64`] but also returning the right singular vectors `V`
+/// (`cols × cols`, column-major), so that `A = U diag(s) Vᴴ`.
+pub(crate) fn thin_svd_uv_c64(data: &[C64], n: usize, cols: usize) -> Result<SvdUv, DenseError> {
+    assert!(data.len() >= n * cols && n >= cols);
+    if data.iter().any(|v| !v.is_finite()) {
+        return Err(DenseError::NonFinite);
+    }
+    let m = Mat::<faer::c64>::from_fn(n, cols, |i, j| data[j * n + i]);
+    let svd = m.thin_svd().map_err(|_| DenseError::NoConvergence);
+    clear_upper_vector_state();
+    let svd = svd?;
+    let s: Vec<f64> = (0..cols).map(|i| svd.S().column_vector()[i].re).collect();
+    let (u, v) = (svd.U(), svd.V());
+    let mut uo = vec![C64::ZERO; n * cols];
+    let mut vo = vec![C64::ZERO; cols * cols];
+    for j in 0..cols {
+        for i in 0..n {
+            uo[j * n + i] = u[(i, j)];
+        }
+        for i in 0..cols {
+            vo[j * cols + i] = v[(i, j)];
+        }
+    }
+    Ok((s, uo, vo))
+}
+
 /// Generalised eigendecomposition `A x = λ B x` of small dense complex matrices. Eigenvalues with
 /// `β = 0` (infinite) are returned as `NaN`.
-pub(crate) fn generalized_eig_c64(a: &Dense<C64>, b: &Dense<C64>) -> Result<(Vec<C64>, Dense<C64>), DenseError> {
+pub fn generalized_eig_c64(a: &Dense<C64>, b: &Dense<C64>) -> Result<(Vec<C64>, Dense<C64>), DenseError> {
     let n = a.rows();
     assert!(a.cols() == n && b.rows() == n && b.cols() == n);
     if n == 0 {
