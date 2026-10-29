@@ -32,6 +32,7 @@ pub mod maxwell;
 pub mod mixed;
 pub mod mm;
 pub mod nep;
+pub mod nleigs;
 pub mod opt;
 pub mod ordering;
 pub mod par;

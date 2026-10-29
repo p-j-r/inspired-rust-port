@@ -15,8 +15,8 @@
 //!   when `block·moments` is too small. Eigenpairs are filtered by region and by an independently
 //!   recomputed residual.
 //!
-//! **Not done:** NLEIGS (rational Krylov on a rational interpolant, the robust method for large problems)
-//! and nonlinear Rayleigh–Ritz refinement, see `docs/STATUS.md`.
+//! NLEIGS (rational Krylov on a rational interpolant, the robust method for many eigenvalues of large problems)
+//! lives in [`crate::nleigs`]. **Not done:** nonlinear Rayleigh–Ritz refinement, see `docs/STATUS.md`.
 
 use crate::basis::Basis;
 use crate::contour::Ellipse;
