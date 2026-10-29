@@ -1,0 +1,32 @@
+[workspace]
+members = [".", "bench"]
+resolver = "3"
+
+[package]
+name = "rsolvers"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Rust ports of representative PETSc (KSP/PC) and SLEPc (EPS) solvers"
+license = "BSD-2-Clause"
+repository = "https://github.com/p-j-r/inspired-rust-port"
+
+[features]
+default = []
+# Deterministic chunked multithreading (rayon) for SpMV, BLAS-1 and basis kernels.
+parallel = ["dep:rayon"]
+
+[dependencies]
+rayon = { version = "1", optional = true }
+
+[dev-dependencies]
+proptest = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[profile.bench]
+inherits = "release"
