@@ -2,12 +2,13 @@
 //! method and prints one JSON line in the same schema as the PETSc driver
 //! (`harness/c/petsc_ksp.c`).
 //!
-//!   --solver cg|cocg|gmres|fgmres [cocg]   --pc none|jacobi|amg [none]   (amg: --hermitian 1 for R = Pᴴ)   --rtol 1e-5   --maxit 10000
+//!   --solver cg|cocg|gmres|fgmres [cocg]   --pc none|jacobi|amg|ilu|icc [none]   (amg: --hermitian 1 for R = Pᴴ; ilu/icc: --levels k [0])   --rtol 1e-5   --maxit 10000
 //!   --restart 30   --side left|right [left]   --orth cgs|mgs|cgs-refine [cgs]   --norm pc|unpc|natural [pc]
 //!   --reps 3   --petsc-sign-test 1 (reproduce PETSc's COCG breakdown test, for parity runs)
 
 use femsolve::amg::{Amg, AmgOptions};
 use femsolve::bundle::{Bundle, read_meta};
+use femsolve::ilu::{Ic, Ilu};
 use femsolve::ksp::{
     Cg, CgKind, CgNorm, CgOptions, Gmres, GmresOptions, Orthogonalization, PcSide, SolveInfo, Tolerances,
 };
@@ -41,10 +42,15 @@ fn run<T: femsolve::faer_glue::FaerScalar>(dir: &str, kv: &HashMap<String, Strin
     } else {
         None
     };
+    let levels: u32 = get("levels", "0").parse().unwrap();
+    let ilu = (get("pc", "none") == "ilu").then(|| Ilu::ilu_k(a, levels));
+    let icc = (get("pc", "none") == "icc").then(|| Ic::ic_k(a, levels, true));
     let setup_s = t_setup.elapsed().as_secs_f64();
     let pc: &dyn Preconditioner<T> = match (get("pc", "none").as_str(), &amg) {
         ("jacobi", _) => &jac,
         ("amg", Some(m)) => m,
+        ("ilu", _) => ilu.as_ref().unwrap(),
+        ("icc", _) => icc.as_ref().unwrap(),
         _ => &id,
     };
     let norm = match get("norm", "pc").as_str() {

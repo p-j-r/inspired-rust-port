@@ -282,3 +282,19 @@ With `--features parallel` the same kernels reach 20–40 GB/s effective on 4 vC
   ~2 residual evaluations, i.e. nearly always for 3-D problems.
 * Anderson acceleration with depth 6 turned a Picard iteration that did not reach 1e-10 in 3000 steps into 33 steps; the least-squares problem is
   solved by modified Gram–Schmidt with dropping of dependent columns (normal equations would square the condition number).
+
+## 19. Storage formats and incomplete factorisations (M1, P3)  (measured)
+
+* **SpMV is bandwidth-bound already in CSR** (49 MB / 5 ms ≈ 9.8 GB/s, the VM's streaming rate), so a format can gain at most
+  the ratio of bytes moved: block CSR 3×3 moves 1.44× fewer bytes and ran 1.1–1.2× faster; 2×2 moves 1.35× fewer and ran 1.4–1.6×
+  faster (timing noise ±10 %). Symmetric (upper-triangle) storage halves the matrix traffic but needs a scatter into two
+  rows, which cost more than the saved traffic: 1.7× less memory, 1.06–1.1× *slower*. The 1.5–2× of the port list needs larger
+  blocks, f32 values, or a machine where CSR is latency-bound.
+* ILU(k)/ICC(k) with the level-of-fill rule `lev(i,m) = lev(i,j) + lev(j,m) + 1 ≤ k` in natural ordering gives *exactly* PETSc's iteration counts, so
+  the sequential PETSc `PCILU`/`PCICC` are a valid tier-A reference. The symbolic phase needs a heap over the lower columns to visit them
+  in ascending order; a dense level array with reset-by-list keeps it O(fill).
+* ILUT(1e-3, lfil 20) cost 3.8× the nonzeros of `A` and cut GMRES(50) from 37 (ILU(0)) to 10 iterations on convection–diffusion
+  (n = 3600): it only pays when the factors are applied many times.
+* Incomplete Cholesky breaks down on matrices that are SPD but not an H-matrix (a banded matrix with 0.7 off-diagonals): the diagonal
+  shift `A + α diag(A)`, `α = 1e-3·2^j`, restores a usable factor; the shift is reported so callers can see it happened.
+* `Scalar` gained `sqrt_principal` for the complex-symmetric `LLᵀ` factorisation.

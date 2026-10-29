@@ -1,5 +1,5 @@
 /* PETSc KSP driver for femsolve problem bundles (same schema as `fs-ksp`).
- *   ./petsc_ksp <bundle-dir> -ksp_kind cg|cocg|gmres|fgmres -pc none|jacobi -rtol r -maxit m
+ *   ./petsc_ksp <bundle-dir> -ksp_kind cg|cocg|gmres|fgmres -pc none|jacobi|amg|ilu|icc [-levels k] -rtol r -maxit m
  *               -restart k -side left|right -orth cgs|mgs|cgs-refine -norm pc|unpc|natural -reps n
  * The right-hand side is the bundle's v0.mtx. */
 #include "common.h"
@@ -65,7 +65,12 @@ int main(int argc, char **argv)
   PetscCall(KSPSetTolerances(ksp, rtol, 1e-50, 1e4, maxit));
   PetscCall(KSPSetInitialGuessNonzero(ksp, PETSC_FALSE));
   PetscCall(KSPGetPC(ksp, &pc));
-  PetscCall(PCSetType(pc, !strcmp(pcn, "jacobi") ? PCJACOBI : !strcmp(pcn, "amg") ? PCGAMG : PCNONE));
+  PetscCall(PCSetType(pc, !strcmp(pcn, "jacobi") ? PCJACOBI : !strcmp(pcn, "amg") ? PCGAMG : !strcmp(pcn, "ilu") ? PCILU : !strcmp(pcn, "icc") ? PCICC : PCNONE));
+  if (!strcmp(pcn, "ilu") || !strcmp(pcn, "icc")) {
+    PetscInt levels = 0;
+    PetscCall(PetscOptionsGetInt(NULL, NULL, "-levels", &levels, NULL));
+    PetscCall(PCFactorSetLevels(pc, levels));
+  }
   PetscCall(PetscMalloc1(maxit + 10, &hist));
   PetscCall(KSPSetResidualHistory(ksp, hist, maxit + 10, PETSC_TRUE));
   t0 = MPI_Wtime();

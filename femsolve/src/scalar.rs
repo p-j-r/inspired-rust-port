@@ -56,6 +56,8 @@ pub trait Scalar:
     /// Multiplication by a real number.
     fn scale(self, r: f64) -> Self;
     fn is_finite(self) -> bool;
+    /// Principal square root (`NaN` for a negative real number).
+    fn sqrt_principal(self) -> Self;
     /// Widening to complex.
     fn to_c64(self) -> C64 {
         C64::new(self.re(), self.im())
@@ -97,6 +99,10 @@ impl Scalar for f64 {
     #[inline]
     fn scale(self, r: f64) -> Self {
         self * r
+    }
+    #[inline]
+    fn sqrt_principal(self) -> Self {
+        self.sqrt()
     }
     #[inline]
     fn is_finite(self) -> bool {
@@ -143,5 +149,9 @@ impl Scalar for C64 {
     #[inline]
     fn is_finite(self) -> bool {
         self.re.is_finite() && self.im.is_finite()
+    }
+    #[inline]
+    fn sqrt_principal(self) -> Self {
+        self.sqrt()
     }
 }

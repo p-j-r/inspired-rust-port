@@ -8,6 +8,7 @@
 pub mod amg;
 pub mod ams;
 pub mod basis;
+pub mod bsr;
 pub mod bundle;
 pub mod contour;
 pub mod csr;
@@ -15,6 +16,7 @@ pub mod dense;
 pub mod direct;
 pub mod eps;
 pub mod faer_glue;
+pub mod ilu;
 pub mod jd;
 pub mod kernels;
 pub mod ksp;

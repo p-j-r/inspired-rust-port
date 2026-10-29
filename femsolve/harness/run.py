@@ -83,6 +83,16 @@ KSP_SUITES = {
         kcase("FGMRES(40) complex", "helm2d:150:150:3.0:0.4", "complex", "fgmres", "jacobi", restart=40),
         kcase("GMRES(40) CGS+refinement, complex", "helm2d:150:150:3.0:0.4", "complex", "gmres", "jacobi", restart=40, orth="cgs-refine"),
     ],
+    # incomplete factorisations (P3): same algorithm as PETSc PCILU/PCICC with -pc_factor_levels in natural ordering
+    "precond": [
+        kcase("CG + Jacobi", "lap2d:100:100", "real", "cg", "jacobi"),
+        kcase("CG + ICC(0)", "lap2d:100:100", "real", "cg", "icc", levels=0),
+        kcase("CG + ICC(1)", "lap2d:100:100", "real", "cg", "icc", levels=1),
+        kcase("CG + ICC(3)", "lap2d:100:100", "real", "cg", "icc", levels=3),
+        kcase("GMRES(30) + ILU(0)", "convdiff2d:200:200:5:3", "real", "gmres", "ilu", levels=0),
+        kcase("GMRES(30) + ILU(2)", "convdiff2d:200:200:5:3", "real", "gmres", "ilu", levels=2),
+        kcase("GMRES(30) + ILU(1), complex symmetric", "helm2d:150:150:3.0:0.4", "complex", "gmres", "ilu", levels=1),
+    ],
 }
 
 def run_ksp_case(c):
