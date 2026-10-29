@@ -132,9 +132,21 @@ pub struct BasisView<'a, T: Scalar> {
 }
 
 impl<T: Scalar> BasisView<'_, T> {
+    /// Vector length.
+    pub fn len(&self) -> usize {
+        self.n
+    }
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
     #[inline]
     pub fn col(&self, j: usize) -> &[T] {
         &self.data[j * self.n..(j + 1) * self.n]
+    }
+    /// Columns `a..b` as one contiguous column-major slice.
+    #[inline]
+    pub fn cols(&self, a: usize, b: usize) -> &[T] {
+        &self.data[a * self.n..b * self.n]
     }
 
     /// `h[j + c·k] = V[:, j]ᴴ w[:, c]` for `j < k`, `c < b` (`VecMDot`, block form), where `w`

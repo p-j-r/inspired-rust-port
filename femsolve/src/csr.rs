@@ -7,7 +7,7 @@
 use crate::linop::LinearOperator;
 use crate::par;
 use crate::scalar::{C64, Scalar};
-use crate::vecops::{self, CHUNK};
+use crate::vecops::CHUNK;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -42,11 +42,11 @@ pub trait LinearOperator<T: Scalar> {
         vecops::dotu(x, y)
     }
 
-    /// `y ← A x` when the caller already holds `bx = B x` for the weight matrix `B` that the
-    /// operator was built from (generalised problems: `A_op = (A−σB)⁻¹ B`). The default ignores
-    /// it; shift-and-invert operators use it to skip a product with `B`.
-    fn apply_with_bx(&self, x: &[T], _bx: &[T], y: &mut [T]) {
-        self.apply(x, y)
+    /// Block form of `apply` when the caller already holds `bx = B x` for the weight matrix
+    /// `B` the operator was built from (generalised problems: `A_op = (A−σB)⁻¹ B`). The default
+    /// ignores `bx`; shift-and-invert operators use it to skip one product with `B` per vector.
+    fn apply_block_with_bx(&self, x: &[T], _bx: &[T], y: &mut [T], nrhs: usize) {
+        self.apply_block(x, y, nrhs)
     }
 }
 
@@ -66,8 +66,8 @@ impl<T: Scalar, O: LinearOperator<T> + ?Sized> LinearOperator<T> for &O {
     fn apply_dotu(&self, x: &[T], y: &mut [T]) -> T {
         (**self).apply_dotu(x, y)
     }
-    fn apply_with_bx(&self, x: &[T], bx: &[T], y: &mut [T]) {
-        (**self).apply_with_bx(x, bx, y)
+    fn apply_block_with_bx(&self, x: &[T], bx: &[T], y: &mut [T], nrhs: usize) {
+        (**self).apply_block_with_bx(x, bx, y, nrhs)
     }
 }
 

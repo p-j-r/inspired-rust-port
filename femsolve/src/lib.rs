@@ -7,6 +7,9 @@
 
 pub mod basis;
 pub mod csr;
+pub mod dense;
+pub mod eps;
+pub mod faer_glue;
 pub mod kernels;
 pub mod linop;
 pub mod par;
