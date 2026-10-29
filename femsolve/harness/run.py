@@ -152,6 +152,61 @@ def cmd_run_ksp(args):
             f.flush()
             print("%-4s %-36s %s" % (r["verdict"], c["name"], r["detail"]), flush=True)
 
+
+# ---- nonlinear solvers (L1): Newton vs PETSc SNES ----------------------------------------------
+RUST_SNES = os.path.join(ROOT, "target", "release", "fs-snes")
+PETSC_SNES = os.path.join(HERE, "c", "real", "petsc_snes")
+
+def scase(name, problem, **opts):
+    return dict(name=name, problem=problem, opts=opts)
+
+SNES_SUITES = {
+    "snes": [
+        scase("Bratu 80x80, mu = 6 (Newton + bt)", "bratu", nx=80, mu=6.0, rtol=1e-10),
+        scase("Bratu 80x80, mu = 6.6 (near the turning point)", "bratu", nx=80, mu=6.6, rtol=1e-10),
+        scase("Bratu 60x60, mu = 6, Jacobian lag 3", "bratu", nx=60, mu=6.0, rtol=1e-10, lag=3),
+        scase("arctan x0 = 1.0 (full steps converge)", "atan", n=10, x0=1.0, rtol=1e-12, ls="basic"),
+        scase("arctan x0 = 2.0 with backtracking", "atan", n=10, x0=2.0, rtol=1e-12, tier="B"),
+    ],
+}
+
+def run_snes_case(c):
+    opts = dict(c["opts"])
+    tier = opts.pop("tier", "A")
+    ls = opts.get("ls", "bt")
+    rust = [RUST_SNES, "--problem", c["problem"]]
+    petsc = [PETSC_SNES, "-problem", c["problem"]]
+    for k, v in opts.items():
+        rk = "none" if (k == "ls" and v == "basic") else v
+        rust += ["--" + k, str(rk)]
+        petsc += ["-" + k, str(v)]
+    return dict(case=c["name"], tier=tier, rust=run_json(rust), petsc=run_json(petsc))
+
+def judge_snes(r):
+    a, b = r["rust"], r["petsc"]
+    if "error" in a or "error" in b:
+        return "ERROR", "rust: %s | petsc: %s" % (a.get("error", "ok")[:60], b.get("error", "ok")[:60])
+    ha, hb = a["residual_norms"], b["residual_norms"]
+    n = min(len(ha), len(hb))
+    # the tail of the history is rounding-dominated (residuals ~1e-10 of the initial one): compare entries above 1e-6 of the start
+    big = [i for i in range(n) if hb[i] > 1e-6 * hb[0]]
+    dh = max((abs(ha[i] - hb[i]) / abs(hb[i]) for i in big), default=0.0)
+    conv_a, conv_b = a["reason"].startswith("Converged"), b["reason"] > 0
+    if r["tier"] == "B":
+        ok = conv_a and conv_b
+        return ("PASS(B)" if ok else "FAIL"), "tier B: iterations %d/%d, both converged: %s, final ‖F‖ %.1e/%.1e" % (a["iterations"], b["iterations"], ok, ha[-1], hb[-1])
+    ok = a["iterations"] == b["iterations"] and conv_a == conv_b and dh < 1e-6
+    return ("PASS" if ok else "FAIL"), "iterations %d/%d, max history diff %.1e, final ‖F‖ %.1e/%.1e" % (a["iterations"], b["iterations"], dh, ha[-1], hb[-1])
+
+def cmd_run_snes(args):
+    with open(args.out, "w") as f:
+        for c in SNES_SUITES[args.suite]:
+            r = run_snes_case(c)
+            r["verdict"], r["detail"] = judge_snes(r)
+            f.write(json.dumps(r) + "\n")
+            f.flush()
+            print("%-7s %-50s %s" % (r["verdict"], c["name"], r["detail"]), flush=True)
+
 # ---- contour-integral eigensolver (E3) vs SLEPc EPSCISS ----------------------------------
 RUST_CONTOUR = os.path.join(ROOT, "target", "release", "fs-contour")
 CISS = {"real": os.path.join(HERE, "c", "real", "slepc_ciss"), "complex": os.path.join(HERE, "c", "complex", "slepc_ciss")}
@@ -334,6 +389,7 @@ if __name__ == "__main__":
     r = sub.add_parser("run"); r.add_argument("--suite", default="quick", choices=sorted(SUITES)); r.add_argument("--out", required=True); r.set_defaults(fn=cmd_run)
     p = sub.add_parser("report"); p.add_argument("file"); p.set_defaults(fn=cmd_report)
     k = sub.add_parser("run-ksp", help="compare linear solvers with PETSc KSP"); k.add_argument("--suite", default="ksp", choices=sorted(KSP_SUITES)); k.add_argument("--out", required=True); k.set_defaults(fn=cmd_run_ksp)
+    sn = sub.add_parser("run-snes", help="compare Newton with PETSc SNES"); sn.add_argument("--suite", default="snes", choices=sorted(SNES_SUITES)); sn.add_argument("--out", required=True); sn.set_defaults(fn=cmd_run_snes)
     q = sub.add_parser("run-contour", help="compare the contour eigensolver with SLEPc CISS"); q.add_argument("--suite", default="contour", choices=sorted(CONTOUR_SUITES)); q.add_argument("--out", required=True); q.set_defaults(fn=cmd_run_contour)
     j = sub.add_parser("rejudge", help="recompute the verdicts of a stored result file"); j.add_argument("file"); j.set_defaults(fn=cmd_rejudge)
     args = ap.parse_args(); args.fn(args)

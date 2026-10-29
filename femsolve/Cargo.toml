@@ -43,3 +43,7 @@ path = "src/bin/fs_ksp.rs"
 [[bin]]
 name = "fs-contour"
 path = "src/bin/fs_contour.rs"
+
+[[bin]]
+name = "fs-snes"
+path = "src/bin/fs_snes.rs"

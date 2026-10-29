@@ -58,6 +58,8 @@ cargo clippy --all-targets --features parallel
 cargo build --release -p femsolve && make -C femsolve/harness/c
 python3 femsolve/harness/run.py run --suite quick --out femsolve/harness/results/quick.jsonl
 python3 femsolve/harness/run.py report femsolve/harness/results/quick.jsonl
+python3 femsolve/harness/run.py run-ksp --suite precond --out femsolve/harness/results/precond.jsonl   # ILU/ICC/ASM/MINRES/BiCGStab vs PETSc
+python3 femsolve/harness/run.py run-snes --out femsolve/harness/results/snes.jsonl                      # Newton vs PETSc SNES
 cargo run --release --example symbolic_share          # how much of a factorisation is symbolic
 cargo run --release --example solve_scaling           # per-vector solve cost vs block width
 ```

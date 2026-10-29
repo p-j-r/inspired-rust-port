@@ -367,3 +367,10 @@ The list expected "little" from nested dissection ("MUMPS with METIS was not fas
 * The end-to-end 3-D eigensolve moved little (4.7 → 4.6 s cold): solves dominate (item 8); they became ≈ 10 % cheaper with the smaller factor.
 * `SymmetricOrdering::Identity` aborts inside faer 0.24.4 (`ereach` index overflow) for the lower-triangle patterns used here; only `Amd` and `Custom` are usable.
 * faer's sparse **LU** takes no user ordering (COLAMD only): the complex symmetric PML matrices cannot use this. A symmetric-pattern ND with a Cholesky-like LDLᵀ (no pivoting) would be the route, with the risk of unstable pivots for indefinite complex symmetric matrices.
+
+## 25. Newton against PETSc SNES  (measured)
+
+* With the same residual, Jacobian, direct linear solves and tolerances, `SNESNEWTONLS` and the Newton in `snes.rs` produce the same iteration counts and residual histories (Bratu 80², μ = 6: 5 iterations, 480 → 52.079 → 2.8849 → 0.011083 → 1.625e-7; the tail agrees to 1e-5 relative, which is just rounding at residual levels 1e-10 of the start).
+  PETSc's `-snes_lag_jacobian 3` (Jacobian rebuilt every 3rd iteration) matches `jacobian_lag: 3`, including the iteration count (7).
+* PETSc's default `snes_stol` is 1e-8, a *convergence* test on the step; the harness sets `-snes_stol 1e-14` so that only the residual test applies.
+* Where line-search backtracking happens (arctan, x₀ = 2) both converge in 4 iterations although PETSc's `bt` uses cubic interpolation: iteration counts, not step lengths, agree.
