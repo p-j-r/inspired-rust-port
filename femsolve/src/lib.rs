@@ -27,6 +27,7 @@ pub mod pc;
 pub mod problem;
 pub mod rng;
 pub mod scalar;
+pub mod sweep;
 pub mod toar;
 pub mod ts;
 pub mod vecops;

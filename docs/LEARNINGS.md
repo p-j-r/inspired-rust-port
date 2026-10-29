@@ -249,3 +249,18 @@ With `--features parallel` the same kernels reach 20–40 GB/s effective on 4 vC
   but needs more orthogonalisation per step in the compressed space, which cancelled the gain on the 2-D test: do not
   expect speed-ups, expect memory.
 * faer's `generalized_eigen` on small pencils is fine (≤ 50×50); it was only slow for ~300×300 pencils with a huge zero/infinite cluster (item 14).
+
+## 17. Frequency sweeps (W1)  (measured)
+
+* A reduced basis needs about **one vector per resonance in the band**, so the saving is (grid points)/(resonances): 400
+  points over 23 resonances → 35 solves (11×); 300 points over ~70 resonances → 68 solves (2.4× in time). Choose or split
+  the band accordingly; there is no free lunch for modally dense bands.
+* The residual of the reduced solution can be evaluated from Gram matrices of `A_j V` without any `n`-vector work
+  (`terms²·r²` flops per frequency), which made the greedy loop essentially free, but it has a noise floor of about
+  1e-8 relative (squared cancellation). The routine therefore switches to the exact residual (one sparse pass per
+  frequency) as soon as the indicator claims convergence or its worst point is an expansion frequency.
+* Rejecting a new basis vector because it is "already in the span" must use a threshold far below the residual
+  target: near a resonance `‖x‖/‖b‖ ~ 1/(γω)`, so a 1e-10 relative out-of-span component already means a 1e-7 residual
+  (this stopped the greedy loop at 1.5e-7 instead of 1e-8). The threshold is now 1e-13 after two Gram–Schmidt passes.
+* Residual-based certification says the *residual* is below tolerance, not the error; at a resonance the error can be
+  `‖T⁻¹‖` times larger (1e-9 output error against 1e-8 residual in the modal test, both fine because of the damping).
