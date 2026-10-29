@@ -348,7 +348,7 @@ impl<T: Scalar> Csr<T> {
     }
 
     /// `y ← A x`, returning `xᴴ y` (square matrices) with the reduction fused into the product
-    /// so `y` is not re-read. Equals `spmv` followed by [`vecops::dotc`] bit for bit.
+    /// so `y` is not re-read. Equals `spmv` followed by [`crate::vecops::dotc`] bit for bit.
     pub fn spmv_dotc(&self, x: &[T], y: &mut [T]) -> T {
         assert_eq!(self.nrows, self.ncols);
         assert_eq!(x.len(), self.ncols);

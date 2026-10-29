@@ -9,7 +9,7 @@
 //! * [`rosenbrock`]: **Rosenbrock (ROS2)** for the nonlinear `M y' = F(t, y)` with a user Jacobian
 //!   (stiff nonlinear heat), step-doubling error control.
 //!
-//! All use [`ShiftedFactorization`] so the symbolic analysis is shared by every step size, and a
+//! All use [`crate::direct::ShiftedFactorization`] so the symbolic analysis is shared by every step size, and a
 //! numeric factorisation is reused for as long as the step size and order do not change. Tolerances
 //! are explicit arguments (no hidden defaults): the port list warns that other codes' default
 //! tolerances were inaccurate.

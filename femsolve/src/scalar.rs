@@ -2,7 +2,7 @@
 //! `Complex<f64>`.
 //!
 //! Only these two types implement [`Scalar`] (the trait is sealed). The hot loops live in
-//! [`Kernels`](crate::kernels::Kernels) so that a type can later get SIMD-specialised versions
+//! [`Kernels`] so that a type can later get SIMD-specialised versions
 //! without touching callers.
 
 use crate::kernels::Kernels;
