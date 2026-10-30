@@ -207,31 +207,6 @@ pub fn generalized_eig_c64(a: &Dense<C64>, b: &Dense<C64>) -> Result<(Vec<C64>, 
     Ok((lam, Dense::from_fn(n, n, |i, j| u[(i, j)])))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn generalized_eig_handles_tiny_pencils() {
-        for n in 1..=5usize {
-            let a = Dense::from_fn(n, n, |i, j| {
-                C64::new((i + 2 * j) as f64 + if i == j { 3.0 } else { 0.0 }, (i as f64 - j as f64) * 0.1)
-            });
-            let b =
-                Dense::from_fn(n, n, |i, j| if i == j { C64::new(1.0 + i as f64, 0.2) } else { C64::new(0.1, 0.0) });
-            let (lam, x) = generalized_eig_c64(&a, &b).unwrap();
-            for k in 0..n {
-                // A x = λ B x
-                for i in 0..n {
-                    let ax = (0..n).fold(C64::ZERO, |s, j| s + a[(i, j)] * x[(j, k)]);
-                    let bx = (0..n).fold(C64::ZERO, |s, j| s + b[(i, j)] * x[(j, k)]);
-                    assert!((ax - lam[k] * bx).norm() < 1e-10 * (1.0 + ax.norm()), "n={n} k={k}");
-                }
-            }
-        }
-    }
-}
-
 // ---- dense kernels of the low-rank multifrontal solver (`blr.rs`) ---------------------------------------
 
 fn dense_par(work: usize) -> Par {
@@ -301,4 +276,29 @@ pub(crate) fn gemm_sub<T: FaerScalar>(c: &mut [T], a: &[T], b: &[T], m: usize, n
     let cm = MatMut::from_column_major_slice_mut(T::faer_slice_mut(c), m, n);
     matmul(cm, Accum::Add, am, bm, T::to_faer(-T::ONE), dense_par(m * n));
     clear_upper_vector_state();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generalized_eig_handles_tiny_pencils() {
+        for n in 1..=5usize {
+            let a = Dense::from_fn(n, n, |i, j| {
+                C64::new((i + 2 * j) as f64 + if i == j { 3.0 } else { 0.0 }, (i as f64 - j as f64) * 0.1)
+            });
+            let b =
+                Dense::from_fn(n, n, |i, j| if i == j { C64::new(1.0 + i as f64, 0.2) } else { C64::new(0.1, 0.0) });
+            let (lam, x) = generalized_eig_c64(&a, &b).unwrap();
+            for k in 0..n {
+                // A x = λ B x
+                for i in 0..n {
+                    let ax = (0..n).fold(C64::ZERO, |s, j| s + a[(i, j)] * x[(j, k)]);
+                    let bx = (0..n).fold(C64::ZERO, |s, j| s + b[(i, j)] * x[(j, k)]);
+                    assert!((ax - lam[k] * bx).norm() < 1e-10 * (1.0 + ax.norm()), "n={n} k={k}");
+                }
+            }
+        }
+    }
 }

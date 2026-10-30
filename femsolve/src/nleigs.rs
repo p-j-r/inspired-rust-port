@@ -14,7 +14,7 @@
 //!    recurrence). The nonlinear eigenvalues in `Σ` are eigenvalues of this pencil.
 //! 3. **Shift-and-invert Krylov–Schur** on the pencil. The operator `(𝐁 − s𝐀)⁻¹𝐀` is applied *without forming
 //!    the big matrices*: block substitution reduces the solve to **one sparse factorisation of `T̃(s)`** and
-//!    a few products with the `A_t`. The existing [`krylov_schur`](crate::eps::krylov_schur) is reused unchanged.
+//!    a few products with the `A_t`. The existing [`krylov_schur`] is reused unchanged.
 //! 4. The eigenvalues in `Σ` are returned with the true residual `‖T(λ)x‖` of the *nonlinear* problem
 //!    ([`NonlinearEigenProblem::relative_residual`]) and, by default, polished by residual inverse iteration.
 //!

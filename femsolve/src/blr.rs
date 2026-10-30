@@ -16,7 +16,7 @@
 //! written here from the paper and from the building blocks already in this crate.
 //!
 //! # What is implemented
-//! * Ordering, tree and symbolic structure: [`nested_dissection_tree`](crate::ordering::nested_dissection_tree) on the
+//! * Ordering, tree and symbolic structure: [`nested_dissection_tree`] on the
 //!   pattern of `A + Aᵀ`; the front of a node has its own unknowns first, then the sorted ancestors it touches. The
 //!   symbolic object ([`BlrSymbolic`]) depends only on the pattern, so it is built once and reused for every shift.
 //! * Numeric phase: dense fronts assembled from the permuted matrix and the children's updates (extend-add), pivot
