@@ -5,8 +5,10 @@ Summary for the whole repository. Details live next to the code; this file only 
 ## Licence
 
 * `solvers/` is released under **BSD-2-Clause** (`solvers/LICENSE`).
-* The meshing folder is covered by **its own** licence and notices (`femmesh/LICENSE`, `femmesh/THIRD_PARTY_NOTICES.md` in the
-  meshing session's work). It is written by a different session and is **not** covered or audited by this file.
+* `meshers/` (`femmesh`) is released under **BSD-2-Clause** (`meshers/femmesh/LICENSE`) with its own statements in
+  [`meshers/PROVENANCE.md`](meshers/PROVENANCE.md) and [`meshers/femmesh/THIRD_PARTY_NOTICES.md`](meshers/femmesh/THIRD_PARTY_NOTICES.md).
+  It was written by a different session; this file summarises only what `solvers/` contains. The meshing session reports no
+  code taken from other projects and no dependencies.
 
 ## `solvers/`: how the code relates to other projects
 
