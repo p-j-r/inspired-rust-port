@@ -1,0 +1,101 @@
+# `solvers/`: `rsolvers` and `femsolve`
+
+> Part of the `inspired-rust-port` repository (the meshing work lives in a sibling folder). **Where the code comes from, module by module:
+> [`PROVENANCE.md`](PROVENANCE.md)**; licence texts: [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md); repository summary: `../NOTICES.md`.
+> Overview for newcomers: [`docs/EXPLAINER.md`](docs/EXPLAINER.md).
+
+> **Also in this repository: [`femsolve/`](femsolve/README.md)**, the staging crate for porting solvers into nyx `femcore`
+> (real and complex Krylov–Schur, shift-and-invert with symbolic reuse, Matrix Market export, a SLEPc comparison harness).
+> Status, findings and next steps: [`docs/STATUS.md`](docs/STATUS.md), [`docs/LEARNINGS.md`](docs/LEARNINGS.md),
+> [`docs/NYX_INTEGRATION.md`](docs/NYX_INTEGRATION.md). The rest of this file describes `rsolvers`, the earlier real-only port.
+
+A from-scratch Rust port of a representative slice of two well-known C libraries:
+
+| Area | PETSc / SLEPc original | `rsolvers` |
+|---|---|---|
+| Linear solvers | `KSPCG`, `KSPGMRES` | `ksp::Cg`, `ksp::Gmres` (restart, left/right PC, CGS / modified Gram-Schmidt) |
+| Preconditioners | `PCJACOBI`, `PCSOR` (SSOR), `PCILU(0)`, `PCICC(0)` | `pc::Jacobi`, `pc::Sor`, `pc::Ilu0`, `pc::Ic0` |
+| Eigensolver | SLEPc `EPSKRYLOVSCHUR` (symmetric) | `eps::krylov_schur` (Lanczos, full re-orthogonalization, thick restart, locking) |
+
+It is **not** a drop-in replacement for PETSc/SLEPc: it is sequential-memory (optionally
+multithreaded), real double precision, CSR only, and covers the solvers above.
+Defaults, norms, convergence tests and restart rules deliberately follow PETSc 3.19 / SLEPc 3.19
+so that the iteration counts and eigenvalues can be compared one-to-one (they match; see
+[BENCHMARKS.md](BENCHMARKS.md)).
+
+## License
+
+PETSc and SLEPc are both BSD-2-Clause, which permits reuse and relicensing with the notice
+retained. This crate is therefore released under **BSD-2-Clause** (see [LICENSE](LICENSE)) and
+reproduces both upstream notices in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The code is a
+fresh Rust implementation written against the upstream algorithms and defaults, not a mechanical
+translation.
+
+## Usage
+
+```rust
+use rsolvers::ksp::{Cg, CgOptions};
+use rsolvers::pc::Ic0;
+use rsolvers::sparse::laplacian_2d;
+
+let a = laplacian_2d(256, 256);
+let m = Ic0::new(&a).unwrap();
+let b = vec![1.0; a.nrows()];
+let mut x = vec![0.0; b.len()];
+let info = Cg::new(CgOptions::default()).solve(&a, &m, &b, &mut x);
+assert!(info.reason.is_converged());
+```
+
+```rust
+use rsolvers::eps::{krylov_schur, EpsOptions};
+let res = krylov_schur(&a, None, &EpsOptions::new(4)).unwrap();   // 4 largest eigenpairs
+println!("{:?}", res.values);
+```
+
+Operators and preconditioners are traits (`LinearOperator`, `Preconditioner`), so matrix-free
+operators (`FnOperator`) are inlined by the compiler.
+
+Cargo feature `parallel` enables multithreading (no dependencies). Threads default to the
+number of cores; set `RSOLVERS_THREADS`, call `par::set_default_threads`, or scope with
+`par::with_threads(n, || ...)`. Results are identical for every thread count.
+
+## Design notes
+
+* **Deterministic parallelism.** All reductions use fixed-size chunks combined in a fixed
+  order, so results are *bitwise identical* for any thread count.
+* **A hot thread team instead of a work-stealing pool.** Solvers issue many short parallel
+  regions; waking a sleeping pool thread cost 50-150 µs on the benchmark VM, as much as the
+  work itself. `par` keeps a small team that spins ~400 µs between jobs (about 1 µs dispatch)
+  and then parks.
+* **Runtime-dispatched SIMD kernels** (`src/kernels.rs`: generic / AVX2 / AVX-512). The
+  multi-dot kernel is written with explicit intrinsics because LLVM's auto-vectorisation of it
+  is fragile (it fell back to scalar code under `-C target-cpu=native`). FMA is never
+  used, so every tier is also bitwise identical (unit-tested). Override with `RSOLVERS_ISA=generic|avx2|avx512`.
+* **Fused passes.** CG with a diagonal-scaling PC does update + preconditioner + all three dot
+  products in one sweep over memory; SpMV fuses `p·Ap`; Gram-Schmidt uses 4-column blocked
+  dot/axpy kernels.
+* **Triangular solves** (SSOR, ILU(0), IC(0)) share one natural-order unit-triangular kernel.
+
+## Tests
+
+```
+cargo test --release --features parallel
+RSOLVERS_ISA=generic cargo test --release --features parallel   # also avx2, avx512
+```
+
+Reference dense solvers, analytic Laplacian spectra, property tests (proptest) and thread-count
+determinism checks are in `tests/`.
+
+## Benchmarks
+
+See [BENCHMARKS.md](BENCHMARKS.md) for results and caveats. To reproduce:
+
+```
+cargo build --release -p rsolvers-bench
+(cd bench/c && make)                      # needs PETSc + SLEPc with pkg-config, e.g. apt libpetsc-real-dev libslepc-real-dev
+python3 bench/run.py run --suite quick --out bench/results/quick.jsonl
+python3 bench/run.py report bench/results/quick.jsonl
+```
+
+The Rust and C drivers read the **same binary problem files** (`bench/data`, generated by
+`rsolvers-bench gen`) and report the minimum of repeated solves after a warm-up.

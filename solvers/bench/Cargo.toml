@@ -1,0 +1,9 @@
+[package]
+name = "rsolvers-bench"
+version = "0.1.0"
+edition = "2024"
+license = "BSD-2-Clause"
+publish = false
+
+[dependencies]
+rsolvers = { path = "..", features = ["parallel"] }

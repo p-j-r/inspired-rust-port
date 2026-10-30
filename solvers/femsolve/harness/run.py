@@ -1,0 +1,395 @@
+#!/usr/bin/env python3
+"""Compare femsolve against SLEPc on identical problem bundles (port item V1).
+
+  python3 harness/run.py run    --suite quick --out harness/results/quick.jsonl
+  python3 harness/run.py report harness/results/quick.jsonl
+  python3 harness/run.py run-ksp --out harness/results/ksp.jsonl     # Krylov linear solvers vs PETSc KSP
+  python3 harness/run.py rejudge harness/results/quick.jsonl   # recompute verdicts after changing the rules
+
+Setup (Ubuntu 24.04):
+  apt install libpetsc-real-dev libslepc-real-dev libpetsc-complex-dev libslepc-complex-dev libopenmpi-dev pkg-config
+  cargo build --release -p femsolve
+  make -C femsolve/harness/c
+
+Acceptance tiers (see docs/STATUS.md):
+  A  same algorithm, same start vector and options: identical restart and operator-application
+     counts, eigenvalues to 1e-10 relative, residuals recomputed by each side independently
+  B  different path to the same answer: eigenvalue sets to 1e-8 and residuals below tolerance
+     (used when the spectrum is degenerate, where which copy emerges depends on rounding)
+Timing: minimum of repeated solves after a warm-up, both sides in one session; differences
+under 10 % are ties.
+"""
+import argparse, json, os, subprocess, sys, shutil
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+RUST_EPS = os.path.join(ROOT, "target", "release", "fs-eps")
+RUST_GEN = os.path.join(ROOT, "target", "release", "fs-gen")
+DATA = os.path.join(HERE, "data")
+SLEPC = {"real": os.path.join(HERE, "c", "real", "slepc_eps"), "complex": os.path.join(HERE, "c", "complex", "slepc_eps")}
+
+# name, spec, scalar, hermitian, args (shared), tier
+def case(name, spec, scalar, herm, tier="A", **kw):
+    return dict(name=name, spec=spec, scalar=scalar, herm=herm, tier=tier, **kw)
+
+SUITES = {
+    "quick": [
+        case("fe1d ncv=12", "fe1d:2000", "real", 1, sigma=(0.5, 0), nev=4, ncv=12),
+        case("fe1d default", "fe1d:2000", "real", 1, sigma=(0.5, 0), nev=4),
+        case("fe1d nev=10 ncv=14", "fe1d:2000", "real", 1, sigma=(0.5, 0), nev=10, ncv=14, tol=1e-10),
+        # SLEPc's test is ‖r‖/|θ|; eigenvalues λ ~ 1e-5 here make the relative residual of the original problem ~ tol/|λ|.
+        case("fe1d Cholesky (shift below spectrum)", "fe1d:2000", "real", 1, sigma=(-1e-4, 0), nev=5, ncv=12, definite=1, resid_max=1e-2),
+        case("gauge1d (complex Hermitian)", "gauge1d:2000:0.7", "complex", 1, sigma=(0.513, 0), nev=4),
+        case("gauge1d ncv=8", "gauge1d:2000:0.7", "complex", 1, sigma=(0.513, 0), nev=4, ncv=8),
+        case("pml1d (complex symmetric)", "pml1d:2000:0.3", "complex", 0, sigma=(0.5133, 0.3001), nev=4),
+        case("pml1d ncv=8", "pml1d:2000:0.3", "complex", 0, sigma=(0.5133, 0.3001), nev=4, ncv=8),
+        case("pml2d pencil (complex B)", "pml2d:60:50:3.0", "complex", 0, sigma=(1.0137, 0.0), nev=4),
+        case("lap1d direct, largest", "lap1d:600", "real", 1, mode="direct", which="largest", nev=3, ncv=20, tol=1e-8, maxit=3000),
+        case("lap2d (degenerate)", "lap2d:100:100", "real", 1, tier="B", sigma=(2.013, 0), nev=6),
+    ],
+    "full": [],
+}
+SUITES["full"] = SUITES["quick"] + [
+    case("fe1d n=20000", "fe1d:20000", "real", 1, sigma=(0.5, 0), nev=8, reps=5),
+    case("gauge1d n=20000", "gauge1d:20000:0.7", "complex", 1, sigma=(0.513, 0), nev=8, reps=5),
+    case("pml1d n=20000", "pml1d:20000:0.3", "complex", 0, sigma=(0.5133, 0.3001), nev=8, reps=5),
+    # ~100 restarts of a slowly converging non-Hermitian run: rounding differences between the two LU factorisations are amplified, so only tier B is meaningful
+    case("pml2d 200x200", "pml2d:200:200:3.0", "complex", 0, tier="B", sigma=(1.0137, 0.0), nev=6, reps=3),
+    # a cube: the spectrum is degenerate, so only tier B is meaningful
+    case("lap3d 40 Cholesky", "lap3d:40", "real", 1, tier="B", sigma=(-0.1, 0), nev=6, definite=1, reps=3),
+]
+
+# ---- linear solvers (KSP) ---------------------------------------------------------------
+RUST_KSP = os.path.join(ROOT, "target", "release", "fs-ksp")
+PETSC_KSP = {"real": os.path.join(HERE, "c", "real", "petsc_ksp"), "complex": os.path.join(HERE, "c", "complex", "petsc_ksp")}
+
+def kcase(name, spec, scalar, solver, pc="none", tier="A", **opts):
+    # tier "B": the iteration is chaotic in rounding (indefinite MINRES, BiCGStab without a strong PC), so only the
+    # outcome (iteration count within 5 %, true residual below tolerance) is compared, not the residual history.
+    return dict(name=name, spec=spec, scalar=scalar, solver=solver, pc=pc, tier=tier, opts=opts)
+
+# PETSc's COCG applies a real-part sign test that is wrong for complex symmetric matrices (it stops
+# at iteration 2 on every complex symmetric problem tried), so COCG is compared on real SPD matrices
+# (identical algorithm) and checked against a dense solve in tests/ksp.rs for the complex case.
+KSP_SUITES = {
+    "ksp": [
+        kcase("CG complex build, real SPD", "lap2d:100:100", "complex", "cg", "jacobi"),
+        kcase("COCG complex build, real SPD", "lap2d:100:100", "complex", "cocg", "jacobi"),
+        kcase("GMRES(30) real nonsymmetric", "convdiff2d:200:200:5:3", "real", "gmres"),
+        kcase("GMRES(30) right PC", "convdiff2d:200:200:5:3", "real", "gmres", "jacobi", side="right"),
+        kcase("GMRES(30) MGS", "convdiff2d:200:200:5:3", "real", "gmres", "jacobi", orth="mgs"),
+        kcase("FGMRES(30)", "convdiff2d:200:200:5:3", "real", "fgmres", "jacobi"),
+        kcase("GMRES(60) complex symmetric", "helm2d:150:150:3.0:0.4", "complex", "gmres", "none", restart=60),
+        kcase("GMRES(40) complex symmetric Jacobi", "helm2d:150:150:3.0:0.4", "complex", "gmres", "jacobi", restart=40),
+        kcase("GMRES(40) right PC, complex", "helm2d:150:150:3.0:0.4", "complex", "gmres", "jacobi", restart=40, side="right"),
+        kcase("FGMRES(40) complex", "helm2d:150:150:3.0:0.4", "complex", "fgmres", "jacobi", restart=40),
+        kcase("GMRES(40) CGS+refinement, complex", "helm2d:150:150:3.0:0.4", "complex", "gmres", "jacobi", restart=40, orth="cgs-refine"),
+    ],
+    # incomplete factorisations (P3): same algorithm as PETSc PCILU/PCICC with -pc_factor_levels in natural ordering
+    "precond": [
+        kcase("CG + Jacobi", "lap2d:100:100", "real", "cg", "jacobi"),
+        kcase("CG + ICC(0)", "lap2d:100:100", "real", "cg", "icc", levels=0),
+        kcase("CG + ICC(1)", "lap2d:100:100", "real", "cg", "icc", levels=1),
+        kcase("CG + ICC(3)", "lap2d:100:100", "real", "cg", "icc", levels=3),
+        kcase("GMRES(30) + ILU(0)", "convdiff2d:200:200:5:3", "real", "gmres", "ilu", levels=0),
+        kcase("GMRES(30) + ILU(2)", "convdiff2d:200:200:5:3", "real", "gmres", "ilu", levels=2),
+        kcase("GMRES(30) + ILU(1), complex symmetric", "helm2d:150:150:3.0:0.4", "complex", "gmres", "ilu", levels=1),
+        # MINRES / BiCGStab (K1b)
+        kcase("MINRES, indefinite real symmetric", "shift2d:100:100:0.05", "real", "minres", "jacobi", tier="B"),
+        kcase("MINRES, no preconditioner", "shift2d:100:100:0.05", "real", "minres", tier="B"),
+        kcase("MINRES + ICC(0) on SPD", "lap2d:100:100", "real", "minres", "icc", levels=0),
+        kcase("BiCGStab, convection-diffusion", "convdiff2d:200:200:5:3", "real", "bcgs", "jacobi", tier="B"),
+        kcase("BiCGStab + ILU(0)", "convdiff2d:200:200:5:3", "real", "bcgs", "ilu", levels=0),
+        kcase("BiCGStab complex symmetric + ILU(1)", "helm2d:150:150:3.0:0.4", "complex", "bcgs", "ilu", levels=1),
+        # additive Schwarz (P4): contiguous blocks, exact local LU
+        kcase("CG + ASM basic, 8 blocks, overlap 1", "lap2d:100:100", "real", "cg", "asm", blocks=8, overlap=1, **{"asm-type": "basic"}),
+        kcase("CG + ASM basic, 8 blocks, overlap 2", "lap2d:100:100", "real", "cg", "asm", blocks=8, overlap=2, **{"asm-type": "basic"}),
+        kcase("GMRES(30) + RAS, 8 blocks, overlap 1", "convdiff2d:200:200:5:3", "real", "gmres", "asm", blocks=8, overlap=1),
+        kcase("GMRES(30) + RAS, 16 blocks, overlap 2", "convdiff2d:200:200:5:3", "real", "gmres", "asm", blocks=16, overlap=2),
+    ],
+}
+
+def run_ksp_case(c):
+    d = ensure_bundle(c["spec"])
+    rust = [RUST_KSP, d, "--solver", c["solver"], "--pc", c["pc"], "--rtol", "1e-8", "--reps", "3"]
+    petsc = [PETSC_KSP[c["scalar"]], d, "-ksp_kind", c["solver"], "-pc", c["pc"], "-rtol", "1e-8", "-reps", "3"]
+    for k, v in c["opts"].items():
+        rust += ["--" + k, str(v)]
+        petsc += ["-" + k, str(v)]
+    return dict(case=c["name"], spec=c["spec"], solver=c["solver"], scalar=c["scalar"], tier=c.get("tier", "A"), rust=run_json(rust), petsc=run_json(petsc))
+
+def judge_ksp(r):
+    a, b = r["rust"], r["petsc"]
+    if "error" in a or "error" in b:
+        return "ERROR", "rust: %s | petsc: %s" % (a.get("error", "ok")[:60], b.get("error", "ok")[:60])
+    ha, hb = a["history"], b["history"]
+    # PETSc's FGMRES logs the restart residual twice per cycle (the second copy is the recomputed
+    # value, equal to ~1e-12); collapse such repeats on both sides.
+    if r["solver"] == "fgmres":
+        def collapse(h):
+            return [v for i, v in enumerate(h) if i == 0 or abs(v - h[i - 1]) > 1e-9 * abs(h[i - 1])]
+        ha, hb = collapse(ha), collapse(hb)
+    n = min(len(ha), len(hb))
+    dh = max((abs(x - y) / max(abs(y), 1e-300) for x, y in zip(ha[:n], hb[:n])), default=float("nan"))
+    if r.get("tier") == "B":
+        ok = abs(a["iterations"] - b["iterations"]) <= 0.05 * b["iterations"] and a["true_rel_resid"] < 1e-6 and b["true_rel_resid"] < 1e-6
+        return ("PASS(B)" if ok else "FAIL"), "tier B: iterations %d/%d, true resid %.1e/%.1e, time %.3g/%.3g s" % (
+            a["iterations"], b["iterations"], a["true_rel_resid"], b["true_rel_resid"], a["solve_min_s"], b["solve_min_s"])
+    ok = a["iterations"] == b["iterations"] and dh < 1e-4 and a["true_rel_resid"] < 1e-6
+    return ("PASS" if ok else "FAIL"), "iterations %d/%d, max history diff %.1e, true resid %.1e/%.1e, time %.3g/%.3g s" % (
+        a["iterations"], b["iterations"], dh, a["true_rel_resid"], b["true_rel_resid"], a["solve_min_s"], b["solve_min_s"])
+
+def cmd_run_ksp(args):
+    for p in (RUST_KSP, RUST_GEN, PETSC_KSP["real"], PETSC_KSP["complex"]):
+        if not os.path.exists(p):
+            sys.exit("missing %s (see the setup lines at the top of this file)" % p)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w") as f:
+        for c in KSP_SUITES[args.suite]:
+            r = run_ksp_case(c)
+            r["verdict"], r["detail"] = judge_ksp(r)
+            f.write(json.dumps(r) + "\n")
+            f.flush()
+            print("%-4s %-36s %s" % (r["verdict"], c["name"], r["detail"]), flush=True)
+
+
+# ---- nonlinear solvers (L1): Newton vs PETSc SNES ----------------------------------------------
+RUST_SNES = os.path.join(ROOT, "target", "release", "fs-snes")
+PETSC_SNES = os.path.join(HERE, "c", "real", "petsc_snes")
+
+def scase(name, problem, **opts):
+    return dict(name=name, problem=problem, opts=opts)
+
+SNES_SUITES = {
+    "snes": [
+        scase("Bratu 80x80, mu = 6 (Newton + bt)", "bratu", nx=80, mu=6.0, rtol=1e-10),
+        scase("Bratu 80x80, mu = 6.6 (near the turning point)", "bratu", nx=80, mu=6.6, rtol=1e-10),
+        scase("Bratu 60x60, mu = 6, Jacobian lag 3", "bratu", nx=60, mu=6.0, rtol=1e-10, lag=3),
+        scase("arctan x0 = 1.0 (full steps converge)", "atan", n=10, x0=1.0, rtol=1e-12, ls="basic"),
+        scase("arctan x0 = 2.0 with backtracking", "atan", n=10, x0=2.0, rtol=1e-12, tier="B"),
+    ],
+}
+
+def run_snes_case(c):
+    opts = dict(c["opts"])
+    tier = opts.pop("tier", "A")
+    ls = opts.get("ls", "bt")
+    rust = [RUST_SNES, "--problem", c["problem"]]
+    petsc = [PETSC_SNES, "-problem", c["problem"]]
+    for k, v in opts.items():
+        rk = "none" if (k == "ls" and v == "basic") else v
+        rust += ["--" + k, str(rk)]
+        petsc += ["-" + k, str(v)]
+    return dict(case=c["name"], tier=tier, rust=run_json(rust), petsc=run_json(petsc))
+
+def judge_snes(r):
+    a, b = r["rust"], r["petsc"]
+    if "error" in a or "error" in b:
+        return "ERROR", "rust: %s | petsc: %s" % (a.get("error", "ok")[:60], b.get("error", "ok")[:60])
+    ha, hb = a["residual_norms"], b["residual_norms"]
+    n = min(len(ha), len(hb))
+    # the tail of the history is rounding-dominated (residuals ~1e-10 of the initial one): compare entries above 1e-6 of the start
+    big = [i for i in range(n) if hb[i] > 1e-6 * hb[0]]
+    dh = max((abs(ha[i] - hb[i]) / abs(hb[i]) for i in big), default=0.0)
+    conv_a, conv_b = a["reason"].startswith("Converged"), b["reason"] > 0
+    if r["tier"] == "B":
+        ok = conv_a and conv_b
+        return ("PASS(B)" if ok else "FAIL"), "tier B: iterations %d/%d, both converged: %s, final ‖F‖ %.1e/%.1e" % (a["iterations"], b["iterations"], ok, ha[-1], hb[-1])
+    ok = a["iterations"] == b["iterations"] and conv_a == conv_b and dh < 1e-6
+    return ("PASS" if ok else "FAIL"), "iterations %d/%d, max history diff %.1e, final ‖F‖ %.1e/%.1e" % (a["iterations"], b["iterations"], dh, ha[-1], hb[-1])
+
+def cmd_run_snes(args):
+    with open(args.out, "w") as f:
+        for c in SNES_SUITES[args.suite]:
+            r = run_snes_case(c)
+            r["verdict"], r["detail"] = judge_snes(r)
+            f.write(json.dumps(r) + "\n")
+            f.flush()
+            print("%-7s %-50s %s" % (r["verdict"], c["name"], r["detail"]), flush=True)
+
+# ---- contour-integral eigensolver (E3) vs SLEPc EPSCISS ----------------------------------
+RUST_CONTOUR = os.path.join(ROOT, "target", "release", "fs-contour")
+CISS = {"real": os.path.join(HERE, "c", "real", "slepc_ciss"), "complex": os.path.join(HERE, "c", "complex", "slepc_ciss")}
+
+def ccase(name, spec, scalar, herm, center, a, b, **kw):
+    return dict(name=name, spec=spec, scalar=scalar, herm=herm, center=center, a=a, b=b, **kw)
+
+def fe_window(n, i0, i1, aspect):
+    import math
+    ev = [6 * (1 - math.cos(k * math.pi / (n + 1))) / (2 + math.cos(k * math.pi / (n + 1))) for k in range(1, n + 1)]
+    lo, hi = (ev[i0 - 1] + ev[i0]) / 2, (ev[i1] + ev[i1 + 1]) / 2
+    return ((lo + hi) / 2, 0.0), (hi - lo) / 2, aspect * (hi - lo) / 2
+
+def _fe(n, i0, i1, aspect, **kw):
+    c, a, b = fe_window(n, i0, i1, aspect)
+    return ccase("FE 1-D n=%d, modes %d..%d" % (n, i0 + 1, i1 + 1), "fe1d:%d" % n, "real", 1, c, a, b, **kw)
+
+CONTOUR_SUITES = {
+    "contour": [
+        _fe(400, 60, 71, 0.6, nodes=32, block=16, moments=6),
+        _fe(2000, 300, 311, 0.6, nodes=32, block=16, moments=6),
+        _fe(2000, 300, 311, 0.6, nodes=64, block=16, moments=6),
+        ccase("complex pencil (absorbing layer) 3000, 17 eigenvalues", "pml2d:60:50:3.0", "complex", 0, (1.0, 0.16), 0.08, 0.05, nodes=48, block=12, moments=6),
+        ccase("complex pencil (absorbing layer) 3000, 34 eigenvalues", "pml2d:60:50:3.0", "complex", 0, (1.0, 0.16), 0.15, 0.08, nodes=48, block=12, moments=6),
+    ],
+}
+
+def run_contour_case(c):
+    d = ensure_bundle(c["spec"])
+    (cre, cim), a, b = c["center"], c["a"], c["b"]
+    rust = [RUST_CONTOUR, d, "--center-re", repr(cre), "--center-im", repr(cim), "--a", repr(a), "--b", repr(b), "--nodes", str(c["nodes"]), "--block", str(c["block"]), "--moments", str(c["moments"]), "--reps", "3"]
+    sl = [CISS[c["scalar"]], d, "-herm", str(c["herm"]), "-center_re", repr(cre), "-center_im", repr(cim), "-radius", repr(a), "-vscale", repr(b / a), "-nodes", str(c["nodes"]), "-block", str(c["block"]), "-moments", str(c["moments"]), "-reps", "3"]
+    return dict(case=c["name"], spec=c["spec"], rust=run_json(rust), slepc=run_json(sl))
+
+def judge_contour(r):
+    a, b = r["rust"], r["slepc"]
+    if "error" in a or "error" in b:
+        return "ERROR", "rust: %s | slepc: %s" % (a.get("error", "ok")[:60], b.get("error", "ok")[:60])
+    key = lambda v: (round(v[0], 9), round(v[1], 9))
+    va, vb = sorted(a["values"], key=key), sorted(b["values"], key=key)
+    same_count = len(va) == len(vb)
+    dv = max((abs(complex(*x) - complex(*y)) / max(abs(complex(*y)), 1e-300) for x, y in zip(va, vb)), default=0.0) if same_count else float("nan")
+    res = max(a["true_rel_resid"] + b["true_rel_resid"] + [0])
+    ok = same_count and dv < 1e-8 and res < 1e-8
+    return ("PASS" if ok else "FAIL"), "eigenvalues found %d/%d, max rel diff %.1e, max resid %.1e, count estimate %.1f±%.1f, time %.3g/%.3g s" % (
+        len(va), len(vb), dv, res, a["estimated_count"], a["count_stderr"], a["total_min_s"], b["total_min_s"])
+
+def cmd_run_contour(args):
+    for p in (RUST_CONTOUR, RUST_GEN, CISS["real"], CISS["complex"]):
+        if not os.path.exists(p):
+            sys.exit("missing %s (see the setup lines at the top of this file)" % p)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w") as f:
+        for c in CONTOUR_SUITES[args.suite]:
+            r = run_contour_case(c)
+            r["verdict"], r["detail"] = judge_contour(r)
+            f.write(json.dumps(r) + "\n")
+            f.flush()
+            print("%-4s %-34s %s" % (r["verdict"], c["name"], r["detail"]), flush=True)
+
+def ensure_bundle(spec):
+    d = os.path.join(DATA, spec.replace(":", "_"))
+    if not os.path.exists(os.path.join(d, "A.mtx")):
+        os.makedirs(DATA, exist_ok=True)
+        subprocess.run([RUST_GEN, spec, d], check=True, stdout=subprocess.DEVNULL)
+    return d
+
+def run_json(cmd, env=None):
+    out = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    for line in out.stdout.splitlines():
+        if line.startswith("{"):
+            return json.loads(line)
+    return {"error": (out.stderr or out.stdout)[-500:]}
+
+def run_case(c):
+    d = ensure_bundle(c["spec"])
+    reps = c.get("reps", 3)
+    sre, sim = c.get("sigma", (0, 0))
+    mode = c.get("mode", "shift")
+    common = dict(nev=c.get("nev", 4), tol=c.get("tol", 1e-8), reps=reps)
+    rust = [RUST_EPS, d, "--mode", mode, "--nev", str(common["nev"]), "--tol", str(common["tol"]), "--reps", str(reps),
+            "--sigma-re", str(sre), "--sigma-im", str(sim), "--which", c.get("which", "largest")]
+    slepc = [SLEPC[c["scalar"]], d, "-herm", str(c["herm"]), "-mode", mode, "-nev", str(common["nev"]), "-tol", str(common["tol"]),
+             "-reps", str(reps), "-sigma_re", str(sre), "-sigma_im", str(sim), "-which", c.get("which", "largest")]
+    if "ncv" in c:
+        rust += ["--ncv", str(c["ncv"])]
+        slepc += ["-ncv", str(c["ncv"])]
+    if "maxit" in c:
+        rust += ["--maxit", str(c["maxit"])]
+        slepc += ["-maxit", str(c["maxit"])]
+    if c.get("definite"):
+        rust += ["--definite"]
+        slepc += ["-definite", "1"]
+    # Complex-valued PETSc cannot read an imaginary shift in the real build; the real cases use sim = 0.
+    return dict(case=c["name"], spec=c["spec"], tier=c["tier"], scalar=c["scalar"], resid_max=c.get("resid_max", 100 * common["tol"]),
+                rust=run_json(rust), slepc=run_json(slepc))
+
+def rel_diff(a, b):
+    za, zb = complex(*a), complex(*b)
+    return abs(za - zb) / max(abs(zb), 1e-300)
+
+def judge(r):
+    a, b = r["rust"], r["slepc"]
+    if "error" in a or "error" in b:
+        return "ERROR", "rust: %s | slepc: %s" % (a.get("error", "ok")[:80], b.get("error", "ok")[:80])
+    nev = min(len(a["values"]), len(b["values"]))
+    sigma_sorted = lambda vs: vs
+    dv = max((rel_diff(x, y) for x, y in zip(a["values"][:nev], b["values"][:nev])), default=float("nan"))
+    res = max(a["true_rel_resid"] + b["true_rel_resid"] + [0])
+    same_counts = a["restarts"] == b["restarts"] and a["matvecs"] == b["matvecs"]
+    tol = a["tol"]
+    res_limit = r.get("resid_max", 100 * tol)
+    if r["tier"] == "A":
+        ok = same_counts and dv < 1e-10 and res < res_limit
+        why = "restarts %d/%d matvecs %d/%d max|dλ|/|λ|=%.1e max resid=%.1e" % (a["restarts"], b["restarts"], a["matvecs"], b["matvecs"], dv, res)
+    else:
+        # Tier B: degenerate spectra (or runs so long that rounding is amplified). Compare the
+        # *distinct* eigenvalues: each solver returns some copies of a degenerate value, not
+        # necessarily the same number, so lists are reduced to distinct values (relative gap
+        # 1e-7) and compared over the length both cover.
+        def distinct(vs):
+            out = []
+            for v in sorted(vs, key=lambda z: (round(z[0], 12), round(z[1], 12))):
+                if not out or abs(complex(*v) - complex(*out[-1])) > 1e-7 * max(abs(complex(*v)), 1e-300):
+                    out.append(v)
+            return out
+        va, vb = distinct(a["values"][:nev]), distinct(b["values"][:nev])
+        m = min(len(va), len(vb))
+        dv = max((rel_diff(x, y) for x, y in zip(va[:m], vb[:m])), default=float("nan"))
+        ok = m > 0 and dv < 1e-8 and res < res_limit
+        why = "restarts %d/%d matvecs %d/%d distinct values %d/%d max|dλ|/|λ|=%.1e max resid=%.1e" % (a["restarts"], b["restarts"], a["matvecs"], b["matvecs"], len(va), len(vb), dv, res)
+    return ("PASS" if ok else "FAIL"), why
+
+def cmd_run(args):
+    for p in (RUST_EPS, RUST_GEN, SLEPC["real"], SLEPC["complex"]):
+        if not os.path.exists(p):
+            sys.exit("missing %s (see the setup lines at the top of this file)" % p)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    with open(args.out, "w") as f:
+        for c in SUITES[args.suite]:
+            r = run_case(c)
+            r["verdict"], r["detail"] = judge(r)
+            f.write(json.dumps(r) + "\n")
+            f.flush()
+            print("%-4s %-34s %s" % (r["verdict"], c["name"], r["detail"]), flush=True)
+
+def cmd_rejudge(args):
+    rows = [json.loads(l) for l in open(args.file)]
+    for r in rows:
+        r["verdict"], r["detail"] = judge(r)
+        print("%-4s %-34s %s" % (r["verdict"], r["case"], r["detail"]))
+    with open(args.file, "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+
+def cmd_report(args):
+    rows = [json.loads(l) for l in open(args.file)]
+    print("| case | tier | verdict | restarts (rust/slepc) | matvecs | cold rust [s] | cold slepc [s] | warm rust [s] | warm slepc [s] | warm ratio | max resid |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
+    for r in rows:
+        a, b = r["rust"], r["slepc"]
+        if "error" in a or "error" in b:
+            print("| %s | %s | ERROR | | | | | | |" % (r["case"], r["tier"]))
+            continue
+        ta, tb = a["total_min_s"], b["total_min_s"]
+        res = max(a["true_rel_resid"] + b["true_rel_resid"] + [0])
+        print("| %s | %s | %s | %d / %d | %d / %d | %.4g | %.4g | %.4g | %.4g | %.2f | %.1e |" % (
+            r["case"], r["tier"], r["verdict"], a["restarts"], b["restarts"], a["matvecs"], b["matvecs"],
+            a.get("cold_s", float("nan")), b.get("cold_s", float("nan")), ta, tb, ta / tb if tb else float("nan"), res))
+    print()
+    print("cold = first solve (setup + symbolic + numeric factorisation + eigensolve); warm = minimum of the repeated solves.")
+    print("For rust, a warm solve re-does the numeric factorisation (set_shift) but not the symbolic analysis; for SLEPc the")
+    print("repeated EPSSolve reuses the PC factorisation (the logged factorisation time of a warm solve is 0), so warm slepc")
+    print("excludes the factorisation. Compare cold with cold for an all-in number; warm rust includes factor_s, see the JSON.")
+    print("ratio = rust / slepc (below 1: rust faster).")
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    r = sub.add_parser("run"); r.add_argument("--suite", default="quick", choices=sorted(SUITES)); r.add_argument("--out", required=True); r.set_defaults(fn=cmd_run)
+    p = sub.add_parser("report"); p.add_argument("file"); p.set_defaults(fn=cmd_report)
+    k = sub.add_parser("run-ksp", help="compare linear solvers with PETSc KSP"); k.add_argument("--suite", default="ksp", choices=sorted(KSP_SUITES)); k.add_argument("--out", required=True); k.set_defaults(fn=cmd_run_ksp)
+    sn = sub.add_parser("run-snes", help="compare Newton with PETSc SNES"); sn.add_argument("--suite", default="snes", choices=sorted(SNES_SUITES)); sn.add_argument("--out", required=True); sn.set_defaults(fn=cmd_run_snes)
+    q = sub.add_parser("run-contour", help="compare the contour eigensolver with SLEPc CISS"); q.add_argument("--suite", default="contour", choices=sorted(CONTOUR_SUITES)); q.add_argument("--out", required=True); q.set_defaults(fn=cmd_run_contour)
+    j = sub.add_parser("rejudge", help="recompute the verdicts of a stored result file"); j.add_argument("file"); j.set_defaults(fn=cmd_rejudge)
+    args = ap.parse_args(); args.fn(args)
