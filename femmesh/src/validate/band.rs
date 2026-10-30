@@ -117,11 +117,18 @@ impl BandMatrix {
         y
     }
 
-    /// Solve `A x = b`; returns `(x, relative residual)`.
-    pub fn solve(&self, b: &[C64]) -> Result<(Vec<C64>, f64), String> {
+    /// `self += alpha * other` (same size and bandwidth).
+    pub fn axpy(&mut self, alpha: C64, other: &BandMatrix) {
+        assert!(self.n == other.n && self.bw == other.bw);
+        for (x, y) in self.data.iter_mut().zip(&other.data) {
+            *x += alpha * *y;
+        }
+    }
+
+    /// LU factorisation (no pivoting) that can be reused for several right-hand sides.
+    pub fn factor(&self) -> Result<BandLu, String> {
         let mut a = BandMatrix { n: self.n, bw: self.bw, data: self.data.clone() };
         let (n, bw) = (a.n, a.bw);
-        let mut x = b.to_vec();
         for k in 0..n {
             let piv = a.data[a.idx(k, k)];
             let scale =
@@ -136,12 +143,45 @@ impl BandMatrix {
                     continue;
                 }
                 let f = aik / piv;
+                // store the multiplier in the eliminated slot
+                let ik = a.idx(i, k);
+                a.data[ik] = f;
                 for j in k + 1..=jmax {
                     let t = a.data[a.idx(k, j)] * f;
                     let ij = a.idx(i, j);
                     a.data[ij] -= t;
                 }
-                x[i] = x[i] - x[k] * f;
+            }
+        }
+        Ok(BandLu { lu: a })
+    }
+
+    /// Solve `A x = b`; returns `(x, relative residual)`.
+    pub fn solve(&self, b: &[C64]) -> Result<(Vec<C64>, f64), String> {
+        let x = self.factor()?.solve(b);
+        let r = self.mul_vec(&x);
+        let num: f64 = r.iter().zip(b).map(|(p, q)| (*p - *q).norm_sqr()).sum::<f64>().sqrt();
+        let den: f64 = b.iter().map(|q| q.norm_sqr()).sum::<f64>().sqrt().max(1e-300);
+        Ok((x, num / den))
+    }
+}
+
+/// Factorisation produced by [`BandMatrix::factor`].
+pub struct BandLu {
+    lu: BandMatrix,
+}
+
+impl BandLu {
+    pub fn solve(&self, b: &[C64]) -> Vec<C64> {
+        let a = &self.lu;
+        let (n, bw) = (a.n, a.bw);
+        let mut x = b.to_vec();
+        for k in 0..n {
+            for i in k + 1..=(k + bw).min(n - 1) {
+                let f = a.data[a.idx(i, k)];
+                if f.re != 0.0 || f.im != 0.0 {
+                    x[i] = x[i] - x[k] * f;
+                }
             }
         }
         for k in (0..n).rev() {
@@ -151,10 +191,7 @@ impl BandMatrix {
             }
             x[k] = s / a.data[a.idx(k, k)];
         }
-        let r = self.mul_vec(&x);
-        let num: f64 = r.iter().zip(b).map(|(p, q)| (*p - *q).norm_sqr()).sum::<f64>().sqrt();
-        let den: f64 = b.iter().map(|q| q.norm_sqr()).sum::<f64>().sqrt().max(1e-300);
-        Ok((x, num / den))
+        x
     }
 }
 

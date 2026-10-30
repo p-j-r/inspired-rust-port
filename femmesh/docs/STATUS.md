@@ -1,6 +1,6 @@
 # femmesh status
 
-Branch `claude/quirky-euler-20hyv1`. Build and test: `cargo test --release` (78 tests, ~2 s).
+Branch `claude/quirky-euler-20hyv1`. Build and test: `cargo test --release` (86 tests, ~15 s).
 Machine for all numbers below: 4-core Intel Xeon @ 2.8 GHz VM, rustc 1.97.0, release profile
 (`opt-level 3`, fat LTO), no `target-cpu=native`. VM timing noise is about ±15 %, so differences under
 10 % are ties.
@@ -18,10 +18,10 @@ handoff's description, and the label scheme for PML regions is configurable inst
 
 | # | Milestone | State | Notes |
 |---|---|---|---|
-| M0 | fixtures, statistics, VTK, timing/determinism patterns | **partly done** | Done: box meshes (2D/3D) with boundary labels, analytic fields with exact Hessians, quality and edge-length statistics, VTK writer, `.fmsh` compact format, per-phase timers, deterministic chunked parallel reductions. **Blocked on nyx:** the four chip benchmarks and the baseline numbers of the hand-tuned chip meshes. **Not done (waiting for answer 12):** Mmg/Omega_h offline export. |
+| M0 | fixtures, statistics, VTK, timing/determinism patterns | **partly done** | Done: box meshes (2D/3D) with boundary labels, analytic fields with exact Hessians, quality and edge-length statistics, `.fmsh` compact lossless format with results (no VTK), per-phase timers, deterministic chunked parallel reductions. **Blocked on nyx:** the four chip benchmarks and the baseline numbers of the hand-tuned chip meshes. **Not done (waiting for answer 12):** Mmg/Omega_h offline export. |
 | M1 | `adapt/metric.rs` | **done** | Tier-A algebra tests pass; fused derivative-to-metric kernel; benchmark below. |
 | M2 | `adapt/pml.rs` in 2D | **done except the chip comparison** | Generator, labels, split fallback, reflection-vs-layers study done on a stand-in Helmholtz solver. **Stop and report** (this document). The chip eigenvalue comparison needs nyx. |
-| M7 (early) | `adapt/pml.rs` in 3D | generator done, solver-side checks not | Prisms on faces, hexahedra on edges and corners, conforming, with the simplex split. No 3D solver in this crate to run the native-vs-split eigenvalue check. |
+| M7 | `adapt/pml.rs` in 3D | **done for what can be checked without nyx** | Prisms on faces, hexahedra on edges and corners, conforming, with the simplex split. The scalar harness now runs P1 tets, trilinear hexes and P1xlinear prisms: native and split eigenvalues of the layered mesh converge at second order and agree to 1.2 % at the finest level; 3D PML works for both (`results/m7_pml_3d.md`). **Not done:** the vector `emw3d` cavity check (needs nyx), and the HDF5/XDMF results format of the original wording (see decisions). |
 | M3 | `adapt/topo.rs` + `adapt/geom.rs` (2D) | **done** | Classification from cell and facet labels (interior / chain / corner, chains, frozen chains), validity checks, round trip to `SimplexMesh`, polyline geometry from the mesh itself plus analytic projectors (circle, signed distance) for curved boundaries. |
 | M4 | 2D operators and driver | **done, stop and report** | split, collapse, flip, smooth with quality gates; Hessian-to-metric-to-mesh end to end; results below. Not compared with hand-tuned nyx meshes (not available). |
 | M5, M6, M8–M16 | | not started | |
@@ -146,10 +146,16 @@ lists from scratch, so there is clear room to improve before the threaded milest
   nyx's real labels (`chips.rs`) will need an adapter.
 * Edge/corner region material rule: material of the lowest-index boundary facet on the first stretched side touching it.
 * Gradation uses a linear size-growth law with slope `g` (my parameterisation; not verified equal to Alauzet's).
-* `.fmsh`: lossless, CRC-32 checked, varint/delta connectivity, per-axis dictionary coding of coordinates; no external codec.
-  On a 100x100 structured triangle mesh it is 4.3x smaller than plain binary arrays and 5.2x smaller than ASCII VTK. Arbitrary adapted coordinates
-  are close to incompressible losslessly; a lossy quantised option was not added because PML interface vertices must stay exactly on their plane.
-  Deflate/zstd would need a pure-Rust crate (`miniz_oxide` or `ruzstd` are candidates; licences not yet checked).
+* Storage is `.fmsh` only. VTK and any text writer were removed on request (the original stack used HDF5 plus a small XML
+  descriptor; the point was to avoid large files). `.fmsh` v2 is one self-describing, CRC-checked file holding the mesh (mixed cell
+  types, labels, boundary facets) and any number of result steps with named point or cell fields. Everything is lossless
+  (floats round-trip bit for bit). Each array is stored with the smallest of: byte planes, XOR-with-previous, or dictionary
+  coding, then an adaptive range coder (order-0 or order-1, or raw if neither helps); implemented in `io/entropy.rs`, no dependency.
+  Sizes (`results/m0_fmsh_size.md`): 12-30x smaller than plain binary on structured and PML meshes, 2.1x on an adapted
+  unstructured mesh, 1.7x with three full-entropy f64 fields; xz -9e is within 7 % either way (smaller by 7 % on the adapted mesh, larger elsewhere).
+  Real HDF5 would need the C library or an unproven pure-Rust writer, so I did not use it. If the nyx side must read HDF5/XDMF, a thin
+  exporter belongs there (`fmsh::decode_dataset` gives everything it needs). A lossy quantised option was not added, per the no-loss requirement.
+  Known gap: connectivity of adapted meshes (5.5 B per triangle) could drop about 4x with a topological coder; not done.
 
 ## Still open from the handoff (questions 3, 5, 7–13) and new ones
 

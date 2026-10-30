@@ -1,4 +1,4 @@
-//! Mesh input and output: VTK for viewing, `.fmsh` for compact lossless storage.
+//! Mesh and result storage: the compact lossless `.fmsh` format (see [`fmsh`]).
 
+pub mod entropy;
 pub mod fmsh;
-pub mod vtk;

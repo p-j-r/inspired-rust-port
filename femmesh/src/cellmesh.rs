@@ -5,9 +5,9 @@
 //! * `Tri`, `Quad`: counter-clockwise.
 //! * `Tet`: `(v1 - v0, v2 - v0, v3 - v0)` right-handed.
 //! * `Hex`: nodes 0..3 are the bottom quad counter-clockwise seen from the top, nodes 4..7 the
-//!   top quad above them (the VTK ordering).
+//!   top quad above them.
 //! * `Prism`: nodes 0..2 are the base triangle, nodes 3..5 the top triangle above them, with
-//!   `(0,1,2,3)` right-handed. VTK's wedge is left-handed, so the VTK writer swaps `1<->2`, `4<->5`.
+//!   `(0,1,2,3)` right-handed (the opposite handedness of the VTK wedge).
 //!
 //! [`CellMesh::split_to_simplices`] is the fallback that lets today's simplex-only solvers run on
 //! a mixed mesh. It is conforming because the diagonal of every quad face is a function of the
@@ -60,27 +60,6 @@ impl CellType {
             CellType::Tet => TET_FACES,
             CellType::Prism => PRISM_FACES,
             CellType::Hex => HEX_FACES,
-        }
-    }
-
-    /// VTK cell type id.
-    pub fn vtk_id(self) -> u8 {
-        match self {
-            CellType::Tri => 5,
-            CellType::Quad => 9,
-            CellType::Tet => 10,
-            CellType::Hex => 12,
-            CellType::Prism => 13,
-        }
-    }
-
-    /// Local node order to write to VTK.
-    pub fn vtk_order(self) -> &'static [u8] {
-        match self {
-            CellType::Prism => &[0, 2, 1, 3, 5, 4],
-            CellType::Tri => &[0, 1, 2],
-            CellType::Quad | CellType::Tet => &[0, 1, 2, 3],
-            CellType::Hex => &[0, 1, 2, 3, 4, 5, 6, 7],
         }
     }
 
