@@ -87,8 +87,7 @@ pub fn det<const D: usize>(a: &Sym<D>) -> f64 {
     match D {
         2 => a[0][0] * a[1][1] - a[0][1] * a[1][0],
         3 => {
-            a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
-                - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+            a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
                 + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
         }
         _ => panic!("only D = 2 and D = 3 are supported"),
@@ -235,11 +234,7 @@ pub fn edge_length<const D: usize>(ma: &Sym<D>, mb: &Sym<D>, e: &[f64; D]) -> f6
     let la = length(ma, e);
     let lb = length(mb, e);
     let r = la / lb;
-    if (r - 1.0).abs() < 1e-6 {
-        0.5 * (la + lb)
-    } else {
-        (la - lb) / r.ln()
-    }
+    if (r - 1.0).abs() < 1e-6 { 0.5 * (la + lb) } else { (la - lb) / r.ln() }
 }
 
 /// Intersection of two metrics by simultaneous reduction: the metric whose unit ball is the
@@ -434,15 +429,7 @@ fn scaled_eigs<const D: usize>(c: f64, u: &[f64; D], lo: f64, hi: f64, max_aspec
 }
 
 /// Complexity of the field at global scale `c`.
-fn complexity_at<const D: usize>(
-    eigs: &[Eig<D>],
-    vol: &[f64],
-    c: f64,
-    lo: f64,
-    hi: f64,
-    ar: f64,
-    nt: usize,
-) -> f64 {
+fn complexity_at<const D: usize>(eigs: &[Eig<D>], vol: &[f64], c: f64, lo: f64, hi: f64, ar: f64, nt: usize) -> f64 {
     par::sum_range(eigs.len(), par::CHUNK, nt, |i| {
         let l = scaled_eigs(c, &eigs[i].u, lo, hi, ar);
         vol[i] * l.iter().product::<f64>().sqrt()
@@ -516,34 +503,69 @@ pub fn lp_metrics_with_threads<const D: usize>(
         f64::MAX.sqrt()
     } else {
         let c0 = (target / c1).powf(2.0 / D as f64);
-        let (mut a, mut b) = (c0, c0);
-        let f = |c: f64| complexity_at(&eigs, vol, c, lo, hi, ar, nt);
+        let f = |x: f64| (complexity_at(&eigs, vol, x.exp(), lo, hi, ar, nt) / target).ln();
+        // g(x) = ln C(e^x) - ln target is monotone and piecewise linear in x (a power law between
+        // clamp events), so a bracketing secant (Illinois) converges in a handful of evaluations.
+        let (mut xa, mut xb) = (c0.ln(), c0.ln());
+        let (mut fa, mut fb) = (f(xa), f(xb));
         let mut guard = 0;
-        while f(a) > target && guard < 400 {
-            a *= 0.25;
+        while fa > 0.0 && guard < 400 {
+            xb = xa;
+            fb = fa;
+            xa -= 1.4;
+            fa = f(xa);
             guard += 1;
         }
         guard = 0;
-        while f(b) < target && guard < 400 {
-            b *= 4.0;
+        while fb < 0.0 && guard < 400 {
+            xa = xb;
+            fa = fb;
+            xb += 1.4;
+            fb = f(xb);
             guard += 1;
         }
-        let (mut la, mut lb) = (a.ln(), b.ln());
-        for _ in 0..100 {
-            let lm = 0.5 * (la + lb);
-            let fm = f(lm.exp());
-            if (fm - target).abs() <= 1e-11 * target {
-                la = lm;
-                lb = lm;
+        let tol = 1e-11;
+        let mut x = if fa.abs() < fb.abs() { xa } else { xb };
+        let mut side = 0i32;
+        for _ in 0..200 {
+            if fa.abs() <= tol {
+                x = xa;
                 break;
             }
-            if fm < target {
-                la = lm;
+            if fb.abs() <= tol {
+                x = xb;
+                break;
+            }
+            // regula falsi step, safeguarded by bisection when the bracket is nearly flat
+            let mut xm = (xa * fb - xb * fa) / (fb - fa);
+            if !(xm > xa && xm < xb) {
+                xm = 0.5 * (xa + xb);
+            }
+            let fm = f(xm);
+            x = xm;
+            if fm.abs() <= tol {
+                break;
+            }
+            if fm < 0.0 {
+                xa = xm;
+                fa = fm;
+                if side == -1 {
+                    fb *= 0.5;
+                }
+                side = -1;
             } else {
-                lb = lm;
+                xb = xm;
+                fb = fm;
+                if side == 1 {
+                    fa *= 0.5;
+                }
+                side = 1;
+            }
+            if xb - xa < 1e-15 * (1.0 + xa.abs()) {
+                break;
             }
         }
-        (0.5 * (la + lb)).exp()
+        x.exp()
     };
 
     // pass 2: rebuild matrices
@@ -642,7 +664,7 @@ mod tests {
                     q[i][j] = v[i][j];
                 }
             }
-            let vals: [f64; D] = std::array::from_fn(|_| (self.range(-3.0, 3.0) as f64).exp());
+            let vals: [f64; D] = std::array::from_fn(|_| self.range(-3.0, 3.0).exp());
             from_eig(&vals, &q)
         }
         fn vec<const D: usize>(&mut self) -> [f64; D] {
@@ -713,7 +735,10 @@ mod tests {
                 assert!(q >= quad_form(&b, &e) * (1.0 - 1e-10));
             }
             // symmetric, idempotent
-            assert!(max_diff(&m, &intersect(&b, &a)) < 1e-9 * (1.0 + m.iter().flatten().fold(0.0, |s: f64, x| s.max(x.abs()))));
+            assert!(
+                max_diff(&m, &intersect(&b, &a))
+                    < 1e-9 * (1.0 + m.iter().flatten().fold(0.0, |s: f64, x| s.max(x.abs())))
+            );
             assert!(max_diff(&intersect(&a, &a), &a) < 1e-10);
             // commutes with a congruence: sizes are what matters, not the basis
             // minimality: there is a direction where it equals a or b (a simultaneous eigenvector)
@@ -876,7 +901,8 @@ mod tests {
     fn lp_clamps_and_still_hits_target() {
         let mut g = Lcg(6);
         let n = 2000;
-        let hs: Vec<Sym<2>> = (0..n).map(|_| g.sym::<2>().map(|r| r.map(|x| x * 10f64.powf(g.range(-3.0, 3.0))))).collect();
+        let hs: Vec<Sym<2>> =
+            (0..n).map(|_| g.sym::<2>().map(|r| r.map(|x| x * 10f64.powf(g.range(-3.0, 3.0))))).collect();
         let hs: Vec<Sym<2>> = hs.iter().map(symmetrize).collect();
         let vol = vec![1.0 / n as f64; n];
         let opt = LpOptions {

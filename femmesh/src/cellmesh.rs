@@ -31,8 +31,7 @@ const TRI_FACES: &[&[u8]] = &[&[0, 1], &[1, 2], &[2, 0]];
 const QUAD_FACES: &[&[u8]] = &[&[0, 1], &[1, 2], &[2, 3], &[3, 0]];
 const TET_FACES: &[&[u8]] = &[&[1, 2, 3], &[0, 3, 2], &[0, 1, 3], &[0, 2, 1]];
 const PRISM_FACES: &[&[u8]] = &[&[0, 2, 1], &[3, 4, 5], &[0, 1, 4, 3], &[1, 2, 5, 4], &[2, 0, 3, 5]];
-const HEX_FACES: &[&[u8]] =
-    &[&[0, 3, 2, 1], &[4, 5, 6, 7], &[0, 1, 5, 4], &[1, 2, 6, 5], &[2, 3, 7, 6], &[3, 0, 4, 7]];
+const HEX_FACES: &[&[u8]] = &[&[0, 3, 2, 1], &[4, 5, 6, 7], &[0, 1, 5, 4], &[1, 2, 6, 5], &[2, 3, 7, 6], &[3, 0, 4, 7]];
 
 impl CellType {
     /// Number of nodes.
@@ -220,6 +219,23 @@ impl<const D: usize> CellMesh<D> {
         v
     }
 
+    /// Boundary faces (belonging to exactly one cell) with their nodes in the cyclic order of the
+    /// owning cell's face table, in cell order (deterministic).
+    pub fn boundary_faces_ordered(&self) -> Vec<Vec<u32>> {
+        let fc = self.face_cells();
+        let mut out = Vec::new();
+        for c in 0..self.n_cells() {
+            let vs = self.cell(c);
+            for f in self.types[c].faces() {
+                let nodes: Vec<u32> = f.iter().map(|&l| vs[l as usize]).collect();
+                if fc[&facet_key(&nodes)].len() == 1 {
+                    out.push(nodes);
+                }
+            }
+        }
+        out
+    }
+
     /// Positive measure of cell `c` (area or volume); negative if the cell is inverted.
     pub fn measure(&self, c: usize) -> f64 {
         let vs = self.cell(c);
@@ -227,8 +243,7 @@ impl<const D: usize> CellMesh<D> {
         match self.types[c] {
             CellType::Tri => simplex_signed_measure::<D>(&[p(0), p(1), p(2)]),
             CellType::Quad => {
-                simplex_signed_measure::<D>(&[p(0), p(1), p(2)])
-                    + simplex_signed_measure::<D>(&[p(0), p(2), p(3)])
+                simplex_signed_measure::<D>(&[p(0), p(1), p(2)]) + simplex_signed_measure::<D>(&[p(0), p(2), p(3)])
             }
             CellType::Tet => simplex_signed_measure::<D>(&[p(0), p(1), p(2), p(3)]),
             CellType::Prism | CellType::Hex => {
@@ -265,6 +280,13 @@ impl<const D: usize> CellMesh<D> {
             let m = self.measure(c);
             if !(m > 0.0) {
                 return Err(format!("cell {c} ({:?}): non-positive measure {m:e}", self.types[c]));
+            }
+            // the measure of a split prism / hex ignores inversion, the corner Jacobians do not
+            if !matches!(self.types[c], CellType::Tri | CellType::Tet) {
+                let sj = crate::quality::cell_scaled_jacobian_min(self, c);
+                if !(sj > 0.0) {
+                    return Err(format!("cell {c} ({:?}): inverted (min scaled Jacobian {sj:e})", self.types[c]));
+                }
             }
         }
         let fc = self.face_cells();
@@ -372,11 +394,8 @@ fn split_cell3<const D: usize>(t: CellType, vs: &[u32], pts: &[[f64; D]], out: &
             continue;
         }
         let g: Vec<u32> = f.iter().map(|&l| vs[l as usize]).collect();
-        let tris: Vec<[u32; 3]> = if g.len() == 3 {
-            vec![[g[0], g[1], g[2]]]
-        } else {
-            split_quad(&[g[0], g[1], g[2], g[3]]).to_vec()
-        };
+        let tris: Vec<[u32; 3]> =
+            if g.len() == 3 { vec![[g[0], g[1], g[2]]] } else { split_quad(&[g[0], g[1], g[2], g[3]]).to_vec() };
         for tr in tris {
             let mut tet = [apex, tr[0], tr[1], tr[2]];
             let p = |v: u32| pts[v as usize];
@@ -429,14 +448,8 @@ mod tests {
     #[test]
     fn prism_splits_into_three_tets() {
         let mut m = CellMesh::<3>::new();
-        m.points = vec![
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 2.0],
-            [1.0, 0.0, 2.0],
-            [0.0, 1.0, 2.0],
-        ];
+        m.points =
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 2.0], [1.0, 0.0, 2.0], [0.0, 1.0, 2.0]];
         m.push_cell(CellType::Prism, &[0, 1, 2, 3, 4, 5], 1);
         m.check().unwrap();
         let s = m.split_to_simplices().unwrap();

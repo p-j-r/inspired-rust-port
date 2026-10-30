@@ -264,8 +264,8 @@ mod tests {
     use super::*;
 
     fn unit_square() -> SimplexMesh<2> {
-        let mut m = SimplexMesh::<2>::default();
-        m.points = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let mut m =
+            SimplexMesh::<2> { points: vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], ..Default::default() };
         m.push_cell(&[0, 1, 2], 1);
         m.push_cell(&[0, 2, 3], 1);
         for (a, b) in [(0, 1), (1, 2), (2, 3), (3, 0)] {
