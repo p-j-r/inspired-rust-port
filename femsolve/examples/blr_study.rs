@@ -7,7 +7,7 @@ use femsolve::csr::{laplacian_2d, laplacian_3d};
 use femsolve::direct::{Definiteness, ShiftedFactorization, ShiftedSolver};
 use femsolve::ksp::{Gmres, GmresOptions, PcSide, Tolerances};
 use femsolve::rng::random_vector;
-use femsolve::{C64, Csr, Scalar};
+use femsolve::{C64, Csr};
 use std::time::Instant;
 
 fn helmholtz(l: &Csr<f64>, k2: f64, sigma: f64) -> Csr<C64> {

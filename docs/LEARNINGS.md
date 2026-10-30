@@ -433,3 +433,24 @@ The list expected "little" from nested dissection ("MUMPS with METIS was not fas
 * The structured shift-and-invert operator needs one factorisation of `T̃(s)`; per application `2·(#terms)` sparse products and `O(d · #terms · n)` vector updates. Computing `Σ_j D_j c_j` as `Σ_t A_t (Σ_j c_{t,j} c_j)` instead of forming the `d` matrices `D_j` saves a factor `d / #terms` products.
 * Result quality: the closed-form `√λ` radiation problem (n = 50) returns 33 of 33 eigenvalues in an ellipse (residuals asserted below 1e-9, polishing on); the Drude problem's largest residual is 2.7e-13; the damped quadratic needs 57 operator applications and 4 restarts for 6+ eigenvalues; agreement with Beyn's contour method on a delay problem to 1e-7.
 * Memory is the cost: Krylov vectors have length `d · n`. The paper's compact representation (an `n × r` basis and small coefficient blocks, as TOAR does for `d = 2`) is the right next step for large `n`.
+
+## 32. Low-rank multifrontal LU (S4b)  (measured, mixed result)
+
+Complex Helmholtz-plus-absorption operators (`examples/blr_study.rs`, block 128, `min_front` 256, 4 vCPUs, `faer` dense kernels):
+
+| problem | method | stored vs exact factor | factor [s] | solve [ms] | residual |
+|---|---|---|---|---|---|
+| 2-D 600², n = 360 000 | faer sparse LU (COLAMD, supernodal) | n/a | 5.88 | 163 | 1.4e-15 |
+| | multifrontal, exact | 1.000 | **2.51** | 163 | 1.6e-15 |
+| | BLR tol 1e-4 | 0.971 | 2.18 | 163 | 2.0e-6 |
+| | BLR tol 1e-8 | 0.979 | 2.18 | 175 | 1.2e-10 |
+| 3-D 44³, n = 85 184 | faer sparse LU | n/a | 52.2 | 448 | 3.8e-15 |
+| | multifrontal, exact | 1.000 | **3.25** | 138 | 2.4e-15 |
+| | BLR tol 1e-4 | 0.942 | 5.54 | 168 | 9.2e-6 |
+| | BLR tol 1e-8 | 0.990 | 6.01 | 151 | 2.0e-10 |
+
+* **The side result is bigger than the main one.** A multifrontal LU along a nested-dissection tree with `faer`'s BLAS-3 kernels on dense fronts factors **2.3× (2-D) and 16× (3-D) faster than faer's own sparse LU** and solves 1–3× faster, on the same matrices with the same accuracy. (faer's supernodal LU uses COLAMD on `A`, which for these structurally symmetric matrices gives far more fill than nested dissection on `A + Aᵀ`; item 27 showed the ordering is worth 5–7×, and here the dense kernels on top of the better ordering are worth the rest.) Its limits: structurally symmetric patterns, pivoting only inside each pivot block, one thread-pool use per dense kernel, memory not compared.
+* **The BLR compression is weak at these sizes: 3–6 % of the factor.** Reasons, in order of importance: (1) the factor's storage is spread over all tree levels (2-D: roughly equal per level) while only the top fronts are large enough to compress; (2) a block pays only if `2·rank < block size`, and measured ranks at tolerance 1e-4 are 23–51 against blocks of 64–128 (ratio 0.7–0.8; with 24-blocks and `min_front` 48 on a 200² grid the stored factor drops to 0.87–0.89 but the factorisation is no faster); (3) the level-set separators are thick (largest 3-D pivot block 835, not the ≈ 1 900 of a plane), which shrinks the fronts. Published BLR gains (factor memory 2–3× smaller) concern 3-D problems with 10⁶–10⁷ unknowns, where fronts have several thousand unknowns and `block/rank ≳ 10`; this VM cannot reach them in reasonable time. I did not extrapolate.
+* **Accuracy follows the tolerance, not the number of levels:** direct solve residuals 2e-6 / 9e-6 (tol 1e-4) and 1e-10 (tol 1e-8) in 2-D / 3-D, i.e. about `tol` × 0.02–0.1 relative to the exact solve; one to three steps of iterative refinement or 2–3 GMRES iterations restore 1e-12. Compressing *after* the Schur update (the exact panels feed the parents) is why errors do not compound.
+* **Cost of the compression itself:** full-pivoting ACA on every candidate block made the factorisation 5× slower at first (17 s vs 3.4 s in 3-D); fusing the rank-1 update, the remaining Frobenius norm and the next pivot search into one pass cut that to 1.7× (5.5 s) — and `aca_full` in `lowrank.rs` got the same speed-up. Each ACA step is still a pass over the block; a randomised range finder or early rejection by a cheap rank estimate would shave more.
+* Implementation lessons: (a) a tree from the dissection (`nested_dissection_tree`, nodes numbered children-first) plus the sets `struct(t) = adj(P_t) ∪ ⋃ struct(children) ∖ P_t` is all the symbolic phase needs, and it depends only on the pattern, so shifts reuse it; (b) the child update must be added into the parent *before* the parent's pivot block is extracted, and the dense `loc` map must be reset after each front or a stale entry silently maps a later front's index to the wrong slot; (c) the row permutation of the pivot block applies to `F₁₂` only, `L₂₁ = F₂₁U₁₁⁻¹` is unaffected; (d) `faer`'s `lu_in_place` returns the forward permutation (`(PA)[i] = A[perm[i]]`) — the exact-mode residual test confirmed this on the first run.

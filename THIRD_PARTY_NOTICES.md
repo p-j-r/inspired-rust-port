@@ -117,5 +117,5 @@ Phase 3 (QMR, GCRO-DR, ADS, matrix-free operators, HODLR/ACA, NLEIGS, `sparse_lu
 was written from the literature: QMR: Freund & Nachtigal 1991, Freund 1992 (complex symmetric), the Templates book (Barrett et al. 1994);
 GCRO-DR: Parks, de Sturler, Mackey, Johnson & Maiti 2006; ADS: Hiptmair & Xu 2007, Kolev & Vassilevski 2012 (the `S, C, Π, C, Sᵀ` cycle
 is the standard auxiliary-space one); sum factorisation: Orszag 1980, Deville–Fischer–Mund 2002 (GLL spectral elements); ACA: Bebendorf 2000;
-HODLR solver: Ambikasaran & Darve 2013; LU: Gilbert & Peierls 1988; NLEIGS: Güttel, Van Beeumen, Meerbergen & Michiels 2014. The only external
-code called is faer's AMD ordering (`faer::sparse::linalg::amd`, MIT, already a dependency).
+HODLR solver: Ambikasaran & Darve 2013; LU: Gilbert & Peierls 1988; NLEIGS: Güttel, Van Beeumen, Meerbergen & Michiels 2014; block low-rank multifrontal LU: Amestoy, Ashcraft, Boiteau, Buttari, L'Excellent & Weisbecker 2015, with the multifrontal method of Duff & Reid 1983 and Liu 1992 (no MUMPS/STRUMPACK code was read; both are not permissively licensed or were not checked). The only external
+code called is faer's AMD ordering (`faer::sparse::linalg::amd`) and its dense LU / triangular-solve / matmul kernels (MIT, already a dependency).

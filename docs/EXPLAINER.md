@@ -81,6 +81,7 @@ the original size. We tested it on problems whose eigenvalues are known in close
 | **Schwarz** (`schwarz.rs`) | Cut the domain into overlapping pieces, solve each exactly, add up. | Parallel machines; domain decomposition. |
 | **Field-split / Schur** (`fieldsplit.rs`) | Treat coupled unknowns (velocity/pressure, E/H) block by block. | Coupled multiphysics. |
 | **HODLR** (`lowrank.rs`, new) | Hierarchical low-rank matrices (see §5). | Dense-ish operators; loose-accuracy preconditioning. |
+| **Multifrontal LU, optionally low-rank** (`blr.rs`, new) | Direct solver along a nested-dissection tree with dense fronts. | A fast exact solver for structurally symmetric matrices; the compressed version as a preconditioner for very large 3-D problems. |
 
 **Direct solvers.** `direct.rs` wraps the `faer` sparse LU/Cholesky and remembers the *structure* of the factorisation when only
 the numbers change (the shift `σ` in shift-and-invert). `mixed.rs` factors in single precision (twice as fast) and repairs the
@@ -120,6 +121,16 @@ solve** (by the Woodbury identity, applied level by level) then cost about `n lo
 Why it matters for sparse FEM: the dense blocks that appear on the *separators* of a nested-dissection factorisation have exactly
 this structure (we measured ranks of only 8–10 for separators of 64–256 unknowns). Building a complete low-rank *sparse* solver
 (BLR/HSS multifrontal) is the logical sequel and is listed as future work.
+
+### Low-rank multifrontal sparse solver (`blr.rs`)
+A sparse direct solver can be organised as a *tree*: cut the mesh in two with a separator (a line or a surface), solve the two
+halves independently, and let the small dense problem on the separator tie them together; repeat recursively. Each tree node
+works on a dense "front" (a small dense matrix), which dense linear-algebra libraries handle very fast. That is the
+**multifrontal method**, and just using it (with a good nested-dissection ordering) made our solver 2–16× faster than the
+`faer` sparse LU on the Helmholtz test matrices. The **low-rank** part adds the idea of the previous section: the big blocks inside
+the fronts that couple far-apart pieces of a surface are stored as `U Vᵀ`. At the sizes we could run, only 3–6 % of the memory
+was saved, because the blocks are not yet large compared with their rank; the literature reports larger savings for
+problems with millions of unknowns. The honest summary is in `LEARNINGS.md` §32.
 
 ### Matrix-free high-order operators (`matfree.rs`)
 High-order elements (degree `p` polynomials per cell) are accurate, but their element matrices are dense when the cells are
@@ -166,10 +177,10 @@ curl–curl matrix equals `Cᵀ M C`). Preconditioners for curl and div operator
 | flux (face) elements | `Cg` + `Ads` |
 | curved high-order elements | `matfree::SpectralBox::mapped` |
 | a dense or kernel matrix with smooth structure | `lowrank::Hodlr` |
-| LU where the ordering matters | `sparse_lu::SparseLu` with `LuOrdering::NestedDissection` |
+| LU where the ordering matters | `sparse_lu::SparseLu` with `LuOrdering::NestedDissection`, or (faster) `blr::BlrLu` with `tol = 0` |
 | a nonlinear system | `snes` |
 | time stepping | `ts` |
 
-Not done (and why) is listed in `STATUS.md` → "Next steps": a low-rank *sparse* multifrontal solver, PETSc `TAO`/`TS`
+Not done (and why) is listed in `STATUS.md` → "Next steps": the flop-saving variants of the low-rank multifrontal solver, PETSc `TAO`/`TS`
 comparison drivers, GPU and MPI (design notes only), and everything that needs the real nyx matrices, which were never available
 to this work.

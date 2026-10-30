@@ -216,6 +216,28 @@ mod tests {
     }
 
     #[test]
+    fn the_dissection_tree_partitions_the_order_children_first() {
+        let a = grid_adj(30, 30);
+        let t = nested_dissection_tree(&a, 20);
+        assert_eq!(t.order, nested_dissection(&a, 20));
+        // node ranges tile 0..n exactly once
+        let mut covered = vec![0u8; 900];
+        for node in &t.nodes {
+            for c in &mut covered[node.start..node.end] {
+                *c += 1;
+            }
+            // children are numbered before their parent and lie before it in the order
+            for &ch in &node.children {
+                assert!(t.nodes[ch].end <= node.start);
+            }
+        }
+        assert!(covered.iter().all(|&c| c == 1));
+        let child_count: usize = t.nodes.iter().map(|n| n.children.len()).sum();
+        assert_eq!(child_count + t.roots.len(), t.nodes.len(), "every node is a child or a root");
+        assert_eq!(t.roots.len(), 1);
+    }
+
+    #[test]
     fn separators_come_last_in_each_recursion() {
         // on a 1-D chain the separator of the first split is a single middle node and it is eliminated last
         let n = 101usize;

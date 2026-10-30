@@ -36,6 +36,7 @@ measured, and [`../docs/NYX_INTEGRATION.md`](../docs/NYX_INTEGRATION.md) for how
 | `ads` | **ADS** preconditioner for lowest-order H(div) systems; the Raviart–Thomas cube generator is in `maxwell` |
 | `matfree` | **matrix-free sum-factorised** spectral-element operators (box and curved geometry) |
 | `lowrank` | **ACA, HODLR** matrices and an `O(n log² n)` fast direct solver / preconditioner |
+| `blr` | **low-rank (BLR) multifrontal sparse LU**: nested-dissection tree, dense BLAS-3 fronts (also a fast exact direct solver), block-compressed factors, shifted wrapper, refinement |
 | `sparse_lu` | **sparse LU with a user-chosen fill-reducing ordering** (natural, AMD, nested dissection, custom), real and complex |
 | `harness/` | SLEPc driver (`c/slepc_eps.c`, real and complex PETSc builds) and `run.py` comparison runner |
 

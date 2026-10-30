@@ -184,48 +184,62 @@ pub fn aca_partial<T: Scalar>(
     LowRank::from_terms(m, n, us, vconj)
 }
 
-/// ACA with **full pivoting** on an explicit column-major `m × n` block (destroyed): at each step the largest
-/// remaining entry is the pivot. Stops when the pivot is below `tol` times the largest entry of the original
-/// block times… — precisely: when the remaining Frobenius norm is below `tol · ‖A‖_F`.
+/// ACA with **full pivoting** on an explicit column-major `m × n` block (destroyed; on return it holds the residual):
+/// at each step the largest remaining entry is the pivot, and the rank-1 update, the remaining Frobenius norm and the
+/// next pivot are computed in one pass. Stops when the remaining norm is below `tol · ‖A‖_F` or at `max_rank`.
 pub fn aca_full<T: Scalar>(a: &mut [T], m: usize, n: usize, tol: f64, max_rank: usize) -> LowRank<T> {
     assert_eq!(a.len(), m * n);
-    let norm0 = norm2(a);
-    if norm0 == 0.0 || m == 0 || n == 0 {
+    if m == 0 || n == 0 {
         return LowRank::zero(m, n);
     }
     let max_rank = max_rank.min(m.min(n));
+    // one pass gives the Frobenius norm and the position of the largest entry; every later pass fuses the rank-1
+    // update with the recomputation of both
+    let scan = |a: &[T]| -> (f64, usize, f64) {
+        let (mut sum, mut best, mut at) = (0.0f64, 0.0f64, 0usize);
+        for (k, v) in a.iter().enumerate() {
+            let q = v.modulus_sq();
+            sum += q;
+            if q > best {
+                best = q;
+                at = k;
+            }
+        }
+        (sum, at, best)
+    };
+    let (sum0, mut at, mut best) = scan(a);
+    let norm0 = sum0.sqrt();
+    if norm0 == 0.0 {
+        return LowRank::zero(m, n);
+    }
+    let mut rem2 = sum0;
     let mut us: Vec<Vec<T>> = Vec::new();
     let mut vs: Vec<Vec<T>> = Vec::new();
     while us.len() < max_rank {
-        let rem = norm2(a);
-        if rem <= tol * norm0 {
+        if rem2.max(0.0).sqrt() <= tol * norm0 || best == 0.0 {
             break;
         }
-        let (mut bi, mut bj, mut best) = (0, 0, 0.0f64);
-        for j in 0..n {
-            for i in 0..m {
-                let v = a[j * m + i].modulus();
-                if v > best {
-                    best = v;
-                    bi = i;
-                    bj = j;
-                }
-            }
-        }
-        if best == 0.0 {
-            break;
-        }
+        let (bi, bj) = (at % m, at / m);
         let piv = a[bj * m + bi];
         let u: Vec<T> = (0..m).map(|i| a[bj * m + i]).collect();
         let v: Vec<T> = (0..n).map(|j| a[j * m + bi] / piv).collect();
+        let (mut sum, mut nbest, mut nat) = (0.0f64, 0.0f64, 0usize);
         for j in 0..n {
             let vj = v[j];
-            if vj != T::ZERO {
-                for i in 0..m {
-                    a[j * m + i] -= u[i] * vj;
+            let col = &mut a[j * m..(j + 1) * m];
+            for (i, (x, ui)) in col.iter_mut().zip(&u).enumerate() {
+                *x -= *ui * vj;
+                let q = x.modulus_sq();
+                sum += q;
+                if q > nbest {
+                    nbest = q;
+                    nat = j * m + i;
                 }
             }
         }
+        rem2 = sum;
+        best = nbest;
+        at = nat;
         us.push(u);
         vs.push(v.into_iter().map(|x| x.conj()).collect());
     }
