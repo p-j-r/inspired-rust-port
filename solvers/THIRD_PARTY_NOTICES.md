@@ -1,4 +1,7 @@
-# Third-party notices
+# Third-party notices (`solvers/`)
+
+This file holds the licence texts and the reference list. **Which module took code, read code, or was only inspired by a paper is
+spelled out per module in [`PROVENANCE.md`](PROVENANCE.md)**; the repository-level summary is in the root `NOTICES.md`.
 
 `rsolvers` is a Rust port of ideas, defaults and control flow from two C
 libraries. Their sources were consulted while writing this code (PETSc 3.19.6
@@ -12,7 +15,7 @@ order) is reproduced deliberately so results can be compared one-to-one.
 Both libraries are released under permissive BSD-2-Clause licenses, which allow
 derivative works provided that the copyright notice, the list of conditions and
 the disclaimer are retained. They are reproduced verbatim below, and the
-repository as a whole is released under BSD-2-Clause (see `LICENSE`).
+`solvers/` folder is released under BSD-2-Clause (see `LICENSE` in this folder).
 
 The code in this repository is not a mechanical translation: data structures,
 kernels (fixed-chunk deterministic reductions, fused SpMV+dot, cache-blocked
