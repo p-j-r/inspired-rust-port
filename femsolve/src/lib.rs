@@ -9,6 +9,7 @@ pub mod ads;
 pub mod amg;
 pub mod ams;
 pub mod basis;
+pub mod blr;
 pub mod bsr;
 pub mod bundle;
 pub mod chebfsi;

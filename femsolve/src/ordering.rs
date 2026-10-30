@@ -56,11 +56,42 @@ fn bfs_levels(adj: &[Vec<u32>], sc: &mut Scratch, id: u32, start: usize) -> Vec<
     levels
 }
 
-fn dissect(adj: &[Vec<u32>], nodes: Vec<usize>, leaf: usize, sc: &mut Scratch, out: &mut Vec<usize>) {
+/// A node of the dissection (assembly) tree: the unknowns `order[start..end]` are eliminated together (a
+/// separator, or a leaf subdomain), after all unknowns of the `children`.
+#[derive(Debug, Clone)]
+pub struct NdNode {
+    pub start: usize,
+    pub end: usize,
+    pub children: Vec<usize>,
+}
+
+/// Elimination order together with the dissection tree. Nodes are numbered children-first (a post-order), so
+/// processing them in increasing number is a valid elimination sequence; `roots` lists the independent
+/// components (more than one if the graph is disconnected).
+#[derive(Debug, Clone)]
+pub struct NdTree {
+    pub order: Vec<usize>,
+    pub nodes: Vec<NdNode>,
+    pub roots: Vec<usize>,
+}
+
+fn dissect(
+    adj: &[Vec<u32>],
+    nodes: Vec<usize>,
+    leaf: usize,
+    sc: &mut Scratch,
+    out: &mut Vec<usize>,
+    tree: &mut Vec<NdNode>,
+) -> Vec<usize> {
+    let leaf_node = |nodes: Vec<usize>, out: &mut Vec<usize>, tree: &mut Vec<NdNode>| -> Vec<usize> {
+        let start = out.len();
+        out.extend(nodes);
+        tree.push(NdNode { start, end: out.len(), children: Vec::new() });
+        vec![tree.len() - 1]
+    };
     if nodes.len() <= leaf {
         // BFS order inside a leaf keeps neighbours close
-        out.extend(nodes);
-        return;
+        return leaf_node(nodes, out, tree);
     }
     sc.next_id += 1;
     let id = sc.next_id;
@@ -82,9 +113,9 @@ fn dissect(adj: &[Vec<u32>], nodes: Vec<usize>, leaf: usize, sc: &mut Scratch, o
         for &v in &comp {
             sc.member[v] = id; // restored below by the recursive call's own marking
         }
-        dissect(adj, comp, leaf, sc, out);
-        dissect(adj, rest_ids, leaf, sc, out);
-        return;
+        let mut roots = dissect(adj, comp, leaf, sc, out, tree);
+        roots.extend(dissect(adj, rest_ids, leaf, sc, out, tree));
+        return roots;
     }
     let mut cum = 0;
     let mut mid = levels.len() / 2;
@@ -96,26 +127,34 @@ fn dissect(adj: &[Vec<u32>], nodes: Vec<usize>, leaf: usize, sc: &mut Scratch, o
         }
     }
     if levels.len() < 3 {
-        out.extend(nodes);
-        return;
+        return leaf_node(nodes, out, tree);
     }
     let mid = mid.clamp(1, levels.len() - 2);
     let a: Vec<usize> = levels[..mid].iter().flatten().copied().collect();
     let b: Vec<usize> = levels[mid + 1..].iter().flatten().copied().collect();
     let sep = levels[mid].clone();
-    dissect(adj, a, leaf, sc, out);
-    dissect(adj, b, leaf, sc, out);
+    let mut children = dissect(adj, a, leaf, sc, out, tree);
+    children.extend(dissect(adj, b, leaf, sc, out, tree));
+    let start = out.len();
     out.extend(sep);
+    tree.push(NdNode { start, end: out.len(), children });
+    vec![tree.len() - 1]
 }
 
 /// Elimination order (`order[k]` = the node eliminated `k`-th) of the graph given by symmetric adjacency lists.
 pub fn nested_dissection(adj: &[Vec<u32>], leaf: usize) -> Vec<usize> {
+    nested_dissection_tree(adj, leaf).order
+}
+
+/// [`nested_dissection`] together with its assembly tree (for multifrontal factorisations, see [`crate::blr`]).
+pub fn nested_dissection_tree(adj: &[Vec<u32>], leaf: usize) -> NdTree {
     let n = adj.len();
     let mut sc = Scratch { member: vec![0; n], seen: vec![0; n], level: vec![0; n], stamp: 0, next_id: 0 };
-    let mut out = Vec::with_capacity(n);
-    dissect(adj, (0..n).collect(), leaf.max(2), &mut sc, &mut out);
-    debug_assert_eq!(out.len(), n);
-    out
+    let mut order = Vec::with_capacity(n);
+    let mut nodes = Vec::new();
+    let roots = dissect(adj, (0..n).collect(), leaf.max(2), &mut sc, &mut order, &mut nodes);
+    debug_assert_eq!(order.len(), n);
+    NdTree { order, nodes, roots }
 }
 
 /// Symmetric adjacency lists from a lower-triangular CSC pattern (diagonal ignored).

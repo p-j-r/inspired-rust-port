@@ -231,3 +231,74 @@ mod tests {
         }
     }
 }
+
+// ---- dense kernels of the low-rank multifrontal solver (`blr.rs`) ---------------------------------------
+
+fn dense_par(work: usize) -> Par {
+    if work >= 256 * 256 { faer::get_global_parallelism() } else { Par::Seq }
+}
+
+/// In-place LU with partial pivoting of the `n × n` column-major matrix `a` (unit lower `L` below the diagonal, `U`
+/// on and above it). Returns `perm` with `(P A)[i, :] = A[perm[i], :]`, or `None` for an exactly singular or
+/// non-finite pivot.
+pub(crate) fn dense_lu<T: FaerScalar>(a: &mut [T], n: usize) -> Option<Vec<usize>> {
+    use faer::dyn_stack::{MemBuffer, MemStack};
+    use faer::linalg::lu::partial_pivoting::factor::{lu_in_place, lu_in_place_scratch};
+    if n == 0 {
+        return Some(Vec::new());
+    }
+    let (mut perm, mut inv) = (vec![0usize; n], vec![0usize; n]);
+    let mut mem = MemBuffer::new(lu_in_place_scratch::<usize, T::Elem>(n, n, Par::Seq, Default::default()));
+    let m = MatMut::from_column_major_slice_mut(T::faer_slice_mut(a), n, n);
+    let _ = lu_in_place(m, &mut perm, &mut inv, dense_par(n * n), MemStack::new(&mut mem), Default::default());
+    clear_upper_vector_state();
+    if (0..n).any(|i| {
+        let d = a[i * n + i];
+        d == T::ZERO || !d.is_finite()
+    }) {
+        return None;
+    }
+    Some(perm)
+}
+
+/// `B ← L⁻¹ B` with the unit lower triangle of the packed `n × n` matrix `lu`; `B` is `n × k` column-major.
+pub(crate) fn solve_unit_lower<T: FaerScalar>(lu: &[T], n: usize, b: &mut [T], k: usize) {
+    if n == 0 || k == 0 {
+        return;
+    }
+    let l = faer::MatRef::from_column_major_slice(T::faer_slice(lu), n, n);
+    let bm = MatMut::from_column_major_slice_mut(T::faer_slice_mut(b), n, k);
+    faer::linalg::triangular_solve::solve_unit_lower_triangular_in_place(l, bm, dense_par(n * k));
+    clear_upper_vector_state();
+}
+
+/// `B ← B U⁻¹` with the upper triangle of the packed `n × n` matrix `lu`; `B` is `r × n` column-major.
+pub(crate) fn solve_upper_right<T: FaerScalar>(lu: &[T], n: usize, b: &mut [T], r: usize) {
+    if n == 0 || r == 0 {
+        return;
+    }
+    // B U⁻¹ = (U⁻ᵀ Bᵀ)ᵀ : lower-triangular solve with the transposed view of U
+    let u = faer::MatRef::from_column_major_slice(T::faer_slice(lu), n, n);
+    let bm = MatMut::from_column_major_slice_mut(T::faer_slice_mut(b), r, n);
+    faer::linalg::triangular_solve::solve_lower_triangular_in_place(
+        u.transpose(),
+        bm.transpose_mut(),
+        dense_par(n * r),
+    );
+    clear_upper_vector_state();
+}
+
+/// `C -= A B` for column-major `A: m × k`, `B: k × n`, `C: m × n` (all contiguous).
+pub(crate) fn gemm_sub<T: FaerScalar>(c: &mut [T], a: &[T], b: &[T], m: usize, n: usize, k: usize) {
+    use faer::Accum;
+    use faer::MatRef;
+    use faer::linalg::matmul::matmul;
+    if m == 0 || n == 0 || k == 0 {
+        return;
+    }
+    let am = MatRef::from_column_major_slice(T::faer_slice(a), m, k);
+    let bm = MatRef::from_column_major_slice(T::faer_slice(b), k, n);
+    let cm = MatMut::from_column_major_slice_mut(T::faer_slice_mut(c), m, n);
+    matmul(cm, Accum::Add, am, bm, T::to_faer(-T::ONE), dense_par(m * n));
+    clear_upper_vector_state();
+}
