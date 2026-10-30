@@ -1,6 +1,6 @@
 # femmesh status
 
-Branch `claude/quirky-euler-20hyv1`. Build and test: `cargo test --release` (59 tests, ~1 s).
+Branch `claude/quirky-euler-20hyv1`. Build and test: `cargo test --release` (78 tests, ~2 s).
 Machine for all numbers below: 4-core Intel Xeon @ 2.8 GHz VM, rustc 1.97.0, release profile
 (`opt-level 3`, fat LTO), no `target-cpu=native`. VM timing noise is about ±15 %, so differences under
 10 % are ties.
@@ -22,7 +22,9 @@ handoff's description, and the label scheme for PML regions is configurable inst
 | M1 | `adapt/metric.rs` | **done** | Tier-A algebra tests pass; fused derivative-to-metric kernel; benchmark below. |
 | M2 | `adapt/pml.rs` in 2D | **done except the chip comparison** | Generator, labels, split fallback, reflection-vs-layers study done on a stand-in Helmholtz solver. **Stop and report** (this document). The chip eigenvalue comparison needs nyx. |
 | M7 (early) | `adapt/pml.rs` in 3D | generator done, solver-side checks not | Prisms on faces, hexahedra on edges and corners, conforming, with the simplex split. No 3D solver in this crate to run the native-vs-split eigenvalue check. |
-| M3–M6, M8–M16 | | not started | |
+| M3 | `adapt/topo.rs` + `adapt/geom.rs` (2D) | **done** | Classification from cell and facet labels (interior / chain / corner, chains, frozen chains), validity checks, round trip to `SimplexMesh`, polyline geometry from the mesh itself plus analytic projectors (circle, signed distance) for curved boundaries. |
+| M4 | 2D operators and driver | **done, stop and report** | split, collapse, flip, smooth with quality gates; Hessian-to-metric-to-mesh end to end; results below. Not compared with hand-tuned nyx meshes (not available). |
+| M5, M6, M8–M16 | | not started | |
 
 ## M1 result: fused derivative-to-metric kernel
 
@@ -86,10 +88,60 @@ crossing the interface continue into PML copies, partial layers (sides with zero
 rejection of non-box domains, and the simplex split being conforming and volume-exact (hex into 6 tets, prism into 3,
 cone from the smallest vertex id, quad diagonal through the smallest id — this is what makes neighbouring cells agree).
 
+## M3/M4 result: 2D metric-based adaptation
+
+Operators (`adapt/ops.rs`) and driver (`adapt/drive.rs`), written from the standard published rules
+(length thresholds 1/sqrt 2 and sqrt 2, link condition for collapses, quality-gated flips, length-equalising
+smoothing); no third-party code was read. Everything is serial and deterministic (bit-identical reruns tested).
+Constrained features come from the labels: boundaries, material interfaces (cells of different label) and corners are
+preserved exactly (tested: interface covered edge for edge, side lengths per label unchanged to 1e-12, corners kept,
+L-shaped domain keeps its re-entrant corner, a frozen side keeps its vertices bit for bit).
+
+Independent checks (`tests/adapt2d.rs`, 11 tests): uniform, coarsening, graded isotropic, anisotropic boundary layer
+(element count matches the complexity integral to within 40 %), material interface, curved boundary, frozen boundary,
+L-shape, determinism, Hessian-driven adaptation.
+
+**Error vs elements** (`results/m4_adapt_convergence.md`, `examples/adapt_convergence.rs`; P1 interpolation error recomputed by
+degree-5 quadrature on the output mesh; the comparison mesh is a *uniform structured* mesh with the same number of triangles):
+
+| function | elements | adapted L2 | uniform L2 | gain | q_min | edges in band |
+|---|---|---|---|---|---|---|
+| anisotropic Gaussian | 8 k / 32 k / 128 k | 3.1e-5 / 8.0e-6 / 2.0e-6 | 2.6e-3 / 7.3e-4 / 1.9e-4 | 85x / 91x / 95x | 0.58 / 0.41 / 0.47 | 99.5 % |
+| oblique layer (width 0.01) | 33 k / 95 k / 231 k | 1.5e-6 / 1.0e-6 / 9.0e-7 | 9.4e-3 / 3.4e-3 / 1.4e-3 | 6400x / 3300x / 1600x | 0.46 / 0.42 / 0.49 | 98-99.6 % |
+| thin ridge (width 0.005) | 18 k / 53 k / 192 k | 2.0e-5 / 5.3e-6 / 2.1e-6 | 2.9e-2 / 8.8e-3 / 3.1e-3 | 1500x / 1700x / 1400x | 0.49 / 0.47 / 0.60 | 99.3-99.5 % |
+
+(the rows are the graded p=2 variant; the full table has p=inf and ungraded variants too). The adapted error scales as 1/N
+(ratio 3.9 and 4.0 per 4x elements), which is the optimal P1 rate; the large gains for the layers are mostly the weakness of the uniform
+baseline, which cannot resolve a layer of width 0.01 at these sizes. These are interpolation errors, not solver errors.
+
+**Speed** (serial, this VM): about 15 k triangles/s end to end on the Gaussian (144 k triangles in 9.4 s; phases split 3.7 s, flip 1.5 s,
+collapse 1.3 s, smooth 2.4 s for the 128 k-target graded run, 3 iterations). I did not compare with Mmg or Omega_h (question 12 is unanswered); no claim about being
+competitive. The first iteration overshoots (splits far more than the final mesh keeps, then collapses), and the passes recompute candidate
+lists from scratch, so there is clear room to improve before the threaded milestone (M13).
+
+**Robustness: what I found and fixed, and what remains**
+
+* Fixed: (1) 30 split passes back to back degraded slivers (quality halves per pass), flips between split passes cure it (q_min 0.000 -> 0.41);
+  (2) the Hessian metric produced NaN for exactly flat regions (determinant underflow, per-vertex floor): now a global floor and a log-space
+  determinant; (3) interior vertices sitting almost on a boundary edge (caps, q 5e-8): smoothing now also tries the ring centroid; (4) edges on a
+  frozen boundary that are too long for the metric cannot be split, and their neighbours were split forever: such neighbours are now left alone and
+  the count is reported (`unresolved_frozen`); (5) the same flip candidates were re-tested every pass: only edges next to changed triangles now
+  (identical output, 2.5x faster flips); the snapshot is linear time.
+* **Remaining limitation, important:** adaptation to an *ungraded* metric with sharp features is unreliable. 6 of the 30 ungraded runs in the study do
+  not satisfy the stopping rule and one (thin ridge, p=2, 8000) runs away and is stopped by `max_cells`. Every one of the 15 graded runs converged with
+  q_min >= 0.28. Use `BackgroundMetric2::new_graded` / `metric::grade` (slope 0.4 used in the study); the cost is more elements than the target
+  complexity (1.1x to 3x here).
+* **Remaining limitation:** a feature narrower than the starting-mesh spacing can be missed (the ungraded ridge collapsed to 8 triangles from a 7x7 start). Edges are
+  also measured through their midpoint in the first two iterations, which helps but is not a guarantee; gradation widens the fine region and
+  removes the problem in the study. In the solve-estimate-adapt loop the start mesh is the previous adapted mesh, so this matters mostly for the first cycle.
+* The `converged` flag in `AdaptReport` says whether the stopping rule (splits plus collapses under 0.2 % of the triangles) was met; a run that is not
+  converged is still a valid mesh (checked on every return), just not fully conforming.
+
 ## Decisions I made that you may want to change
 
 * Crate name `femmesh`, no dependencies, BSD-2-Clause (the licence of the other branch; **nyx's licence is unknown to me**).
   It builds in its own workspace (`femmesh/Cargo.toml` has an empty `[workspace]`) so it does not touch PR #1's workspace.
+* Adaptation parameters (all in `AdaptOptions`): split above metric length sqrt 2, collapse below 1/sqrt 2, corner angle 40 degrees, smoothing relaxation 0.7, collapse quality floor 0.2.
 * PML label = `label_base + region_index * label_stride + material`, region index `sum (code_a + 1) 3^a`; defaults 1000 / 1000.
   nyx's real labels (`chips.rs`) will need an adapter.
 * Edge/corner region material rule: material of the lowest-index boundary facet on the first stretched side touching it.

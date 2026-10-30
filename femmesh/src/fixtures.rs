@@ -193,6 +193,42 @@ impl<const D: usize> Field<D> for Layer<D> {
     }
 }
 
+/// `tanh((n . x - c) / delta)` with unit normal `n`: a layer in an arbitrary direction.
+pub struct ObliqueLayer<const D: usize> {
+    pub normal: [f64; D],
+    pub offset: f64,
+    pub delta: f64,
+}
+
+impl<const D: usize> ObliqueLayer<D> {
+    fn s(&self, x: &[f64; D]) -> f64 {
+        let n: f64 = self.normal.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let d: f64 = (0..D).map(|a| self.normal[a] * x[a]).sum::<f64>() / n;
+        (d - self.offset) / self.delta
+    }
+    fn unit(&self) -> [f64; D] {
+        let n: f64 = self.normal.iter().map(|v| v * v).sum::<f64>().sqrt();
+        std::array::from_fn(|a| self.normal[a] / n)
+    }
+}
+
+impl<const D: usize> Field<D> for ObliqueLayer<D> {
+    fn value(&self, x: &[f64; D]) -> f64 {
+        self.s(x).tanh()
+    }
+    fn gradient(&self, x: &[f64; D]) -> [f64; D] {
+        let t = self.value(x);
+        let n = self.unit();
+        std::array::from_fn(|a| (1.0 - t * t) / self.delta * n[a])
+    }
+    fn hessian(&self, x: &[f64; D]) -> Sym<D> {
+        let t = self.value(x);
+        let n = self.unit();
+        let c = -2.0 * t * (1.0 - t * t) / (self.delta * self.delta);
+        std::array::from_fn(|a| std::array::from_fn(|b| c * n[a] * n[b]))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

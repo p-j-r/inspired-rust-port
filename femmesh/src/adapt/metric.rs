@@ -374,7 +374,8 @@ pub struct LpOptions {
     /// Largest allowed ratio between the largest and the smallest size at a vertex
     /// (`f64::INFINITY` for no limit).
     pub max_aspect: f64,
-    /// Eigenvalues of `|H|` below `eps_rel * max |lambda|` are raised to that value.
+    /// Eigenvalues of `|H|` below `eps_rel` times the largest Hessian norm of the whole field are
+    /// raised to that value.
     pub eps_rel: f64,
 }
 
@@ -466,6 +467,11 @@ pub fn lp_metrics_with_threads<const D: usize>(
     let (lo, hi) = (1.0 / (opt.hmax * opt.hmax), 1.0 / (opt.hmin * opt.hmin));
     let ar = opt.max_aspect;
 
+    // Eigenvalues of |H| are raised to a floor that is global, `eps_rel` times the largest Hessian
+    // norm: a per-vertex floor would turn an exactly flat region into an arbitrary needle metric.
+    let gmax = hess.iter().map(|h| h.iter().flatten().map(|x| x * x).sum::<f64>().sqrt()).fold(0.0f64, f64::max);
+    let floor = (opt.eps_rel * gmax).max(1e-300);
+
     // pass 1: eigen-decompose, |lambda| with floor, determinant factor, unscaled complexity
     let mut eigs = vec![Eig::<D> { u: [0.0; D], q: [[0.0; D]; D] }; n];
     let c1 = par::fold_chunks_mut(&mut eigs, par::CHUNK, nt, |start, chunk| {
@@ -473,11 +479,10 @@ pub fn lp_metrics_with_threads<const D: usize>(
         for (k, e) in chunk.iter_mut().enumerate() {
             let i = start + k;
             let (vals, q) = sym_eig(&hess[i]);
-            let amax = vals.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-            let floor = (opt.eps_rel * amax).max(1e-300);
             let mut u = vals.map(|v| v.abs().max(floor));
             if expo != 0.0 {
-                let f = u.iter().product::<f64>().powf(expo);
+                // det^expo in log space: det of a near-flat Hessian underflows
+                let f = (expo * u.iter().map(|x| x.ln()).sum::<f64>()).exp();
                 for x in u.iter_mut() {
                     *x *= f;
                 }
@@ -590,12 +595,12 @@ pub fn lp_metrics_with_threads<const D: usize>(
 pub fn lp_metrics_unfused<const D: usize>(hess: &[Sym<D>], vol: &[f64], opt: &LpOptions) -> Vec<Sym<D>> {
     let expo = p_exponent(opt.p, D);
     let (lo, hi) = (1.0 / (opt.hmax * opt.hmax), 1.0 / (opt.hmin * opt.hmin));
+    let gmax = hess.iter().map(|h| h.iter().flatten().map(|x| x * x).sum::<f64>().sqrt()).fold(0.0f64, f64::max);
+    let floor = (opt.eps_rel * gmax).max(1e-300);
     let abs_h: Vec<Sym<D>> = hess
         .iter()
         .map(|h| {
             let (vals, q) = sym_eig(h);
-            let amax = vals.iter().fold(0.0f64, |m, v| m.max(v.abs()));
-            let floor = (opt.eps_rel * amax).max(1e-300);
             from_eig(&vals.map(|v| v.abs().max(floor)), &q)
         })
         .collect();
@@ -604,7 +609,7 @@ pub fn lp_metrics_unfused<const D: usize>(hess: &[Sym<D>], vol: &[f64], opt: &Lp
         .iter()
         .zip(&dets)
         .map(|(m, d)| {
-            let f = if expo != 0.0 { d.powf(expo) } else { 1.0 };
+            let f = if expo != 0.0 { d.ln().mul_add(expo, 0.0).exp() } else { 1.0 };
             let mut r = *m;
             for row in r.iter_mut() {
                 for x in row.iter_mut() {
@@ -974,6 +979,24 @@ mod tests {
         let un = lp_metrics_unfused(&hs, &vol, &opt);
         assert!((fused.complexity - 1000.0).abs() < 1e-8 * 1000.0);
         assert!((complexity(&un, &vol) - 1000.0).abs() > 1e-3 * 1000.0);
+    }
+
+    #[test]
+    fn exactly_flat_regions_give_finite_metrics() {
+        // half of the field has an exactly zero Hessian (as for a saturated tanh layer)
+        let mut hs: Vec<Sym<2>> = vec![[[0.0; 2]; 2]; 50];
+        hs.extend(vec![[[400.0, 0.0], [0.0, 0.0]]; 50]);
+        let vol = vec![0.01; 100];
+        for p in [1.0, 2.0, f64::INFINITY] {
+            let opt = LpOptions { p, target_complexity: 100.0, hmin: 1e-3, hmax: 1.0, ..Default::default() };
+            let r = lp_metrics_with_threads(&hs, &vol, &opt, 1);
+            assert!(r.metrics.iter().flatten().flatten().all(|x| x.is_finite()), "p={p}");
+            assert!((r.complexity - 100.0).abs() < 1e-8 * 100.0, "p={p}: {}", r.complexity);
+            // the curved half is finer than the flat half
+            assert!(sizes(&r.metrics[75]).0[0] < sizes(&r.metrics[10]).0[0]);
+            let un = lp_metrics_unfused(&hs, &vol, &opt);
+            assert!(un.iter().flatten().flatten().all(|x| x.is_finite()), "unfused p={p}");
+        }
     }
 
     #[test]
