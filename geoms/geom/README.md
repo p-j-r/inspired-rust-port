@@ -4,7 +4,7 @@ A lean CSG-over-B-rep geometry kernel for FEM: a serialisable feature list (para
 named regions) is evaluated into a **region complex** with shared interface edges, provenance-based names, rule-based selectors and a
 compiled `LabelMap`. Code and GUI edit the same data. No meshing happens here.
 
-Status: **step A (2D) is delivered**; see [`CHANGELOG.md`](CHANGELOG.md) and the brief in [`../docs/GEOM_HANDOFF.md`](../docs/GEOM_HANDOFF.md).
+Status: **steps A and B (2D) are delivered**; see [`CHANGELOG.md`](CHANGELOG.md) and the brief in [`../docs/GEOM_HANDOFF.md`](../docs/GEOM_HANDOFF.md).
 
 ```bash
 cd geoms/geom
@@ -48,3 +48,25 @@ let walls = ev.select_labels(&Selector::parse("outer")?)?;
   that angle changes its topology signature.
 * Ellipse intersections are found numerically (720 samples per curve); two roots closer than a sample interval can be missed.
 * `robust` predicates are not used: all decisions are tolerance based on interned geometry.
+
+## Performance (release, one core; `cargo run --release --example geom_bench`)
+
+| Case | Time |
+|---|---|
+| evaluate a 49-feature model (48 regions, 250 edges), cold cache | 0.77 ms |
+| Classify tier only | 0.15 ms |
+| resolve a 4-term selector over 250 edges | 6 us |
+| label map | 0.1 ms |
+| 100 evaluations of a width sweep (shared cache) | 70 ms (primitives: 99 built, 4701 reused; pairs: 893 computed, 19907 reused) |
+| 200-hole plate, cold | 0.94 ms |
+
+The pair cache removes the intersection work of unchanged pairs, but at these sizes the rest of the arrangement (classification, loops) is
+the same cost as the intersections, so a warm cache is only slightly faster than a cold one. Caching the arrangement per connected group
+is the next step if a profile of a large model asks for it.
+
+## Parameter sweeps
+
+`Evaluated::topology_signature()` hashes the combinatorial structure (names and provenance included, parameter values excluded). Equal
+signatures guarantee identical region / edge / vertex id sets in identical order. `fractions_of` / `position_at` give parametric
+positions of boundary nodes, `diff(old, new)` classifies a change as `None`, `Morph` (same signature) or `Remesh`; `ZOnly` needs layer
+stacks (step C/D). Edge direction is canonical per curve kind, so a line rotated through the vertical swaps `left`/`right` (a signature change).

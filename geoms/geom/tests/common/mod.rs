@@ -1,6 +1,8 @@
 //! Golden models shared by the tests and by the generator of `golden/*.json`.
 #![allow(dead_code)]
 
+pub mod interp;
+
 use geom::model::*;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;

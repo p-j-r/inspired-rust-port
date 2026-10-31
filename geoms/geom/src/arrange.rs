@@ -242,6 +242,30 @@ pub fn arrange(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         }
     }
 
+    // a primitive thinner than the undecidable band cannot be classified: refuse it
+    {
+        let o = {
+            let c = scene.bounds.center();
+            [c[0], c[1]]
+        };
+        let mut acc: Vec<(f64, f64)> = vec![(0.0, 0.0); prims.len()];
+        for sg in &segs {
+            let c = &curves.list[sg.cid as usize];
+            let g = c.green(sg.a, sg.b, o);
+            acc[sg.prim as usize].0 += if sg.in_left { g } else { -g };
+            acc[sg.prim as usize].1 += c.length(sg.a, sg.b);
+        }
+        for (pi, (a2, per)) in acc.iter().enumerate() {
+            let thick = a2.abs() / per;
+            if thick <= band {
+                return Err(GeomError(format!(
+                    "'{}' is only about {:.2e} m thick, which is below the smallest distinguishable feature ({:.1e} m = 64 tolerances of this model); make it thicker or remove it",
+                    prims[pi].name, thick, band
+                )));
+            }
+        }
+    }
+
     // 2. candidate pairs by sort-and-sweep on x
     let mut order: Vec<usize> = (0..segs.len()).collect();
     order.sort_by(|&i, &j| segs[i].bb.lo[0].total_cmp(&segs[j].bb.lo[0]).then(i.cmp(&j)));
@@ -548,17 +572,12 @@ pub fn arrange(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
             }
         }
         let Some((x, y)) = did else { break };
-        let b = kept.remove(y.max(x));
-        let a_idx = if y > x { x } else { x - 1 };
-        let a = &mut kept[a_idx];
-        let _ = b.owners;
+        let b = kept.remove(y);
+        let a = &mut kept[if y < x { x - 1 } else { x }];
         let sweep = (a.t1 - a.t0) + (b.t1 - b.t0);
         a.t1 = a.t0 + sweep;
         a.v1 = b.v1;
     }
-    // y was removed above when y > x; when x > y the roles of the removed entry were swapped; re-run is safe because
-    // the loop recomputes everything from `kept`.
-
     finish(scene, curves, verts, kept, tol, prims)
 }
 
@@ -683,6 +702,18 @@ fn finish(
         }
         let Some(r) = side(h0) else { continue };
         if list.iter().any(|&(e, f)| side(2 * e as usize + usize::from(!f)) != Some(r)) {
+            if std::env::var("GEOM_DEBUG").is_ok() {
+                for (e, k) in kept.iter().enumerate() {
+                    eprintln!(
+                        "edge {e}: cid {} t {:.6}..{:.6} v{}->v{} L{:?} R{:?}",
+                        k.cid, k.t0, k.t1, k.v0, k.v1, k.left, k.right
+                    );
+                }
+                for (v, p) in vpos.iter().enumerate() {
+                    eprintln!("vertex {v}: {:?} out {:?}", p, out[v]);
+                }
+                eprintln!("cycle {:?}", list);
+            }
             return Err(GeomError("internal error: a boundary loop changes region".into()));
         }
         cycles.push(Cyc { region: r, edges: list, area: 0.5 * a2 });

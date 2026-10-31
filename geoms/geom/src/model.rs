@@ -234,6 +234,39 @@ impl Op {
         }
     }
 
+    /// Every number-or-expression field of the operation, in a fixed order.
+    pub fn exprs(&self) -> Vec<&Expr> {
+        match self {
+            Op::Rect { min, max } => min.iter().chain(max).collect(),
+            Op::RoundedRect { min, max, r } => min.iter().chain(max).chain([r]).collect(),
+            Op::Circle { center, r } => center.iter().chain([r]).collect(),
+            Op::Ellipse { center, radii, angle_deg } => center.iter().chain(radii).chain([angle_deg]).collect(),
+            Op::Polygon { pts, .. } => pts.iter().flatten().collect(),
+            Op::Transform { steps, .. } => steps
+                .iter()
+                .flat_map(|s| match s {
+                    TStep::Translate(v) => v.iter().collect::<Vec<_>>(),
+                    TStep::Rotate { deg, about, .. } => about.iter().chain([deg]).collect(),
+                    TStep::Mirror { at, .. } => vec![at],
+                    TStep::Scale { factor, about } => about.iter().chain([factor]).collect(),
+                })
+                .collect(),
+            Op::Pattern { kind, n, .. } => match kind {
+                PatternKind::Linear { step } => step.iter().chain([n]).collect(),
+                PatternKind::Polar { center, total_deg, .. } => center.iter().chain([total_deg, n]).collect(),
+            },
+            Op::Pml { thickness, layers, grading, .. } => vec![thickness, layers, grading],
+            Op::Cut { normal, offset, .. } => normal.iter().chain([offset]).collect(),
+            Op::Periodic { translation, .. } => translation.iter().collect(),
+            Op::Size { h, max_deviation, min_layers, .. } => {
+                [h, max_deviation, min_layers].into_iter().flatten().collect()
+            }
+            Op::Union { .. } | Op::Difference { .. } | Op::Intersect { .. } | Op::Overlay { .. } | Op::Tag { .. } => {
+                vec![]
+            }
+        }
+    }
+
     /// Features this operation refers to (all must come earlier in the list).
     pub fn inputs(&self) -> Vec<FeatureId> {
         match self {
@@ -512,6 +545,22 @@ impl Model {
         self.push("overlay", Op::Overlay { regions, pins: vec![] })
     }
     pub fn overlay_defs(&mut self, regions: Vec<RegionDef>, pins: Vec<LabelPin>) -> FeatureId {
+        self.push("overlay", Op::Overlay { regions, pins })
+    }
+    /// Regions with kinds and pinned ids, and boundary pins given as `(selector text, label)`.
+    pub fn overlay_full(
+        &mut self,
+        regions: &[(&str, FeatureId, RegionKind, Option<i32>)],
+        pins: &[(&str, i32)],
+    ) -> FeatureId {
+        let regions = regions
+            .iter()
+            .map(|(n, i, k, p)| RegionDef { name: n.to_string(), input: *i, kind: *k, pinned_id: *p })
+            .collect();
+        let pins = pins
+            .iter()
+            .map(|(s, id)| LabelPin { sel: Selector::parse(s).expect("a valid selector in overlay_full"), id: *id })
+            .collect();
         self.push("overlay", Op::Overlay { regions, pins })
     }
     pub fn pml(

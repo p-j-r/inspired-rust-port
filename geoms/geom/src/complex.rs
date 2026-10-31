@@ -106,20 +106,25 @@ impl Complex {
         to3(self.curve_of(e).0.eval(t))
     }
 
-    /// Exact closest point of edge `e` (the arc between its end points, not the whole curve) to `p`.
-    pub fn project_edge(&self, e: u32, p: V2) -> V2 {
+    /// Exact closest point of edge `e` (the arc between its end points, not the whole curve) to `p`, with its parameter
+    /// (unwrapped into `[t0, t1]`). Stable at periodic seams: parameters are taken relative to `t0`.
+    pub fn edge_closest(&self, e: u32, p: V2) -> (f64, V2) {
         let (c, t0, t1) = self.curve_of(e);
         let (t, q) = c.closest(p);
-        let tol = 1e-12;
-        if c.in_range(t, t0, t1, tol) {
-            return q;
+        if c.in_range(t, t0, t1, 1e-12) {
+            let u = c.param_in(t, t0).min(t1);
+            return (u, if u == t { q } else { c.eval(u) });
         }
         let (a, b) = (c.eval(t0), c.eval(t1));
         if dist2(p, a) <= dist2(p, b) {
-            a
+            (t0, a)
         } else {
-            b
+            (t1, b)
         }
+    }
+
+    pub fn project_edge(&self, e: u32, p: V2) -> V2 {
+        self.edge_closest(e, p).1
     }
 
     /// Unit normal at parameter `t` pointing from the left region to the right region.

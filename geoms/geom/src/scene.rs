@@ -53,6 +53,90 @@ impl Node {
             Node::Diff(a, _) => a.bbox(prims),
         }
     }
+    /// Normalisation: flatten nested Unions / Intersections, drop empty operands, remove duplicates (`A cap A = A`), turn
+    /// bounding-box-disjoint intersections into `Empty` and drop difference operands that cannot touch the minuend.
+    pub fn simplify(self, prims: &[Arc<Prim>]) -> Node {
+        fn flat(v: Vec<Node>, union: bool, prims: &[Arc<Prim>]) -> Vec<Node> {
+            let mut out: Vec<Node> = vec![];
+            for n in v {
+                match n.simplify(prims) {
+                    Node::Union(c) if union => out.extend(c),
+                    Node::Inter(c) if !union => out.extend(c),
+                    Node::Empty if union => {}
+                    n => out.push(n),
+                }
+            }
+            let mut uniq: Vec<Node> = vec![];
+            for n in out {
+                if !uniq.contains(&n) {
+                    uniq.push(n);
+                }
+            }
+            uniq
+        }
+        match self {
+            Node::Union(v) => {
+                let mut u = flat(v, true, prims);
+                match u.len() {
+                    0 => Node::Empty,
+                    1 => u.remove(0),
+                    _ => Node::Union(u),
+                }
+            }
+            Node::Inter(v) => {
+                let mut u = flat(v, false, prims);
+                if u.contains(&Node::Empty) || u.is_empty() {
+                    return Node::Empty;
+                }
+                let boxes: Vec<Aabb> = u.iter().map(|n| n.bbox(prims)).collect();
+                for i in 0..boxes.len() {
+                    for j in i + 1..boxes.len() {
+                        if boxes[i].is_empty() || boxes[j].is_empty() || !boxes[i].overlaps(&boxes[j]) {
+                            return Node::Empty;
+                        }
+                    }
+                }
+                if u.len() == 1 {
+                    u.remove(0)
+                } else {
+                    Node::Inter(u)
+                }
+            }
+            Node::Diff(a, b) => {
+                let a = a.simplify(prims);
+                if a == Node::Empty {
+                    return a;
+                }
+                let ab = a.bbox(prims);
+                let b: Vec<Node> = flat(b, true, prims)
+                    .into_iter()
+                    .filter(|n| *n != Node::Empty && n.bbox(prims).overlaps(&ab))
+                    .collect();
+                if b.contains(&a) {
+                    return Node::Empty;
+                }
+                if b.is_empty() {
+                    a
+                } else {
+                    Node::Diff(Box::new(a), b)
+                }
+            }
+            n => n,
+        }
+    }
+
+    pub fn remap(&mut self, map: &[usize]) {
+        match self {
+            Node::Prim(i) => *i = map[*i],
+            Node::Union(v) | Node::Inter(v) => v.iter_mut().for_each(|n| n.remap(map)),
+            Node::Diff(a, b) => {
+                a.remap(map);
+                b.iter_mut().for_each(|n| n.remap(map));
+            }
+            Node::Empty => {}
+        }
+    }
+
     pub fn leaves(&self, out: &mut Vec<usize>) {
         match self {
             Node::Empty => {}
@@ -563,6 +647,34 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
         }
         rx = out;
     }
-    let prims = b.prims;
+    // normalise, then drop primitives that no region refers to any more
+    let mut prims = b.prims;
+    for r in &mut rx {
+        r.expr = std::mem::replace(&mut r.expr, Node::Empty).simplify(&prims);
+    }
+    let mut used = vec![false; prims.len()];
+    let mut leaves = vec![];
+    for r in &rx {
+        r.expr.leaves(&mut leaves);
+    }
+    for l in leaves {
+        used[l] = true;
+    }
+    let mut map = vec![usize::MAX; prims.len()];
+    let mut kept = vec![];
+    for (i, p) in prims.drain(..).enumerate() {
+        if used[i] {
+            map[i] = kept.len();
+            kept.push(p);
+        }
+    }
+    for r in &mut rx {
+        r.expr.remap(&map);
+    }
+    let prims = kept;
+    let mut bounds = Aabb::EMPTY;
+    for p in prims.iter().filter(|p| !p.aux) {
+        bounds = bounds.union(&p.bbox);
+    }
     Ok(Scene { dim: 2, env, prims, regions: rx, pins: pins.clone(), bounds, warnings, auto_tags })
 }

@@ -4,7 +4,7 @@
 
 use crate::arrange::arrange;
 use crate::complex::Complex;
-use crate::error::{GeomError, GeomResult};
+use crate::error::GeomResult;
 use crate::math::*;
 use crate::model::*;
 use crate::scene::{build_scene, Cache, Scene, Stats};
@@ -24,6 +24,7 @@ pub struct Evaluated {
     pub complex: Option<Complex>,
     pub warnings: Vec<String>,
     pub(crate) sim: crate::sim::SimData,
+    pub(crate) feature_hashes: Vec<(FeatureId, u64)>,
     bounds: Aabb,
 }
 
@@ -52,6 +53,7 @@ impl Evaluator {
             complex: None,
             warnings: vec![],
             sim: Default::default(),
+            feature_hashes: vec![],
             bounds,
         };
         if tier >= Tier::Complex {
@@ -65,9 +67,10 @@ impl Evaluator {
                 }
             }
             #[cfg(debug_assertions)]
-            cx.check().map_err(|m| GeomError(format!("self-check failed: {m}")))?;
+            cx.check().map_err(|m| crate::error::GeomError(format!("self-check failed: {m}")))?;
             ev.complex = Some(cx);
         }
+        ev.feature_hashes = crate::diff::feature_hashes(list, &scene.env);
         ev.scene = Some(scene);
         ev.warnings = warnings;
         if tier >= Tier::Complex {
