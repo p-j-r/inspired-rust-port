@@ -198,6 +198,15 @@ pub enum Op {
         r1: Expr,
         h: Expr,
     },
+    /// 3D: a full turn of a `Rect` or `Polygon` profile about the sweep axis through `center`. The profile's `(x, y)` are the radius
+    /// (must be >= 0) and the height along the axis. Faces `swept:<profile role>`: cone sides, cylinder walls and flat rings, with a
+    /// circle edge at every profile corner off the axis. Must lie clear of every other face.
+    Revolve {
+        profile: FeatureId,
+        #[serde(default = "z_axis")]
+        axis: Axis,
+        center: [Expr; 3],
+    },
     /// 3D: torus with axis z (one face `surface`; must not touch any other face)
     Torus {
         center: [Expr; 3],
@@ -286,6 +295,7 @@ impl Op {
             Op::Box { .. } => "Box",
             Op::Sphere { .. } => "Sphere",
             Op::Cone { .. } => "Cone",
+            Op::Revolve { .. } => "Revolve",
             Op::Torus { .. } => "Torus",
             Op::Cylinder { .. } => "Cylinder",
             Op::Extrude { .. } => "Extrude",
@@ -312,6 +322,7 @@ impl Op {
             Op::Box { min, max } => min.iter().chain(max).collect(),
             Op::Sphere { center, r } => center.iter().chain([r]).collect(),
             Op::Cone { base, r0, r1, h, .. } => base.iter().chain([r0, r1, h]).collect(),
+            Op::Revolve { center, .. } => center.iter().collect(),
             Op::Torus { center, major, minor } => center.iter().chain([major, minor]).collect(),
             Op::Cylinder { base, r, h, .. } => base.iter().chain([r, h]).collect(),
             Op::Extrude { z0, z1, taper_deg, .. } => {
@@ -348,7 +359,7 @@ impl Op {
     pub fn inputs(&self) -> Vec<FeatureId> {
         match self {
             Op::Transform { input, .. } | Op::Pattern { input, .. } => vec![*input],
-            Op::Extrude { profile, .. } => vec![*profile],
+            Op::Extrude { profile, .. } | Op::Revolve { profile, .. } => vec![*profile],
             Op::Union { ids } | Op::Intersect { ids } => ids.clone(),
             Op::Difference { a, b } => std::iter::once(*a).chain(b.iter().copied()).collect(),
             Op::Overlay { regions, .. } => regions.iter().map(|r| r.input).collect(),
@@ -642,6 +653,24 @@ impl Model {
         h: impl Into<Expr>,
     ) -> FeatureId {
         self.push(name, Op::Cone { base: e3(base), axis, r0: r0.into(), r1: r1.into(), h: h.into() })
+    }
+    /// Turns a `Rect` / `Polygon` profile once about the z axis through `center` (see `Op::Revolve`).
+    pub fn revolve(
+        &mut self,
+        name: &str,
+        profile: FeatureId,
+        center: (impl Into<Expr>, impl Into<Expr>, impl Into<Expr>),
+    ) -> FeatureId {
+        self.push(name, Op::Revolve { profile, axis: Axis::Z, center: e3(center) })
+    }
+    pub fn revolve_along(
+        &mut self,
+        name: &str,
+        axis: Axis,
+        profile: FeatureId,
+        center: (impl Into<Expr>, impl Into<Expr>, impl Into<Expr>),
+    ) -> FeatureId {
+        self.push(name, Op::Revolve { profile, axis, center: e3(center) })
     }
     pub fn sphere(
         &mut self,

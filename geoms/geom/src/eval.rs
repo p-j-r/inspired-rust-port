@@ -133,6 +133,10 @@ impl Evaluated {
     pub fn faces(&self) -> &[crate::complex::Face] {
         &self.complex().faces
     }
+    /// Outward normals sampled over facet `i` (see `Complex::facet_normals`).
+    pub fn facet_normals(&self, i: u32) -> Vec<V3> {
+        self.complex().facet_normals(i)
+    }
     pub fn complex(&self) -> &Complex {
         self.complex.as_ref().expect("this evaluation did not reach the Complex tier")
     }

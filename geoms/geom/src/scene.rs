@@ -242,7 +242,9 @@ pub fn stack_axis(list: &FeatureList) -> GeomResult<usize> {
     let mut found: Option<(usize, &str)> = None;
     for f in list.features.iter().filter(|f| !f.suppressed) {
         let a = match &f.op {
-            Op::Cylinder { axis, .. } | Op::Extrude { axis, .. } | Op::Cone { axis, .. } => axis.index(),
+            Op::Cylinder { axis, .. } | Op::Extrude { axis, .. } | Op::Cone { axis, .. } | Op::Revolve { axis, .. } => {
+                axis.index()
+            }
             _ => continue,
         };
         match found {
@@ -376,6 +378,42 @@ impl Builder<'_> {
         self.prims.push(prim);
         self.memo.insert(key, self.prims.len() - 1);
         Ok(Node::Prim(self.prims.len() - 1))
+    }
+
+    /// The counter-clockwise polygon of a `Rect` or `Polygon` profile and its edge roles (for `Revolve`).
+    fn profile_raw(&self, id: FeatureId) -> GeomResult<(Vec<V2>, Vec<String>)> {
+        let Some(&fi) = self.index.get(&id) else { return Err(GeomError(format!("unknown feature id {id}"))) };
+        let f = &self.list.features[fi];
+        match &f.op {
+            Op::Rect { min, max } => {
+                let (a, b) = (self.ev2(min, f, "min corner")?, self.ev2(max, f, "max corner")?);
+                let (lo, hi) = ([a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])]);
+                if hi[0] <= lo[0] || hi[1] <= lo[1] {
+                    return Err(GeomError(format!("Rect '{}' has zero or negative width or height", f.name)));
+                }
+                Ok((
+                    vec![lo, [hi[0], lo[1]], hi, [lo[0], hi[1]]],
+                    ["bottom", "right", "top", "left"].map(String::from).to_vec(),
+                ))
+            }
+            Op::Polygon { pts, names } => {
+                let p: Vec<V2> = pts.iter().map(|q| self.ev2(q, f, "point")).collect::<GeomResult<_>>()?;
+                let nm: Vec<String> =
+                    if names.is_empty() { (0..p.len()).map(|i| format!("e{i}")).collect() } else { names.clone() };
+                if p.len() < 3 || nm.len() != p.len() || polygon_area(&p).abs() <= 1e-300 {
+                    return Err(GeomError(format!(
+                        "Polygon '{}' needs 3 or more points, one name per edge, and an area",
+                        f.name
+                    )));
+                }
+                Ok(ccw_polygon(&p, &nm))
+            }
+            op => Err(GeomError(format!(
+                "{} '{}' cannot be revolved: only Rect and Polygon profiles can",
+                op.kind(),
+                f.name
+            ))),
+        }
     }
 
     fn inst(&mut self, id: FeatureId, xf: Xf3, suffix: &str) -> GeomResult<Node> {
@@ -538,6 +576,50 @@ impl Builder<'_> {
                     return Ok(Node::Prim(i));
                 }
                 self.prims.push(Arc::new(Prim::new_body(f.id, format!("{}{}", f.name, suffix), body)));
+                self.memo.insert(key, self.prims.len() - 1);
+                Ok(Node::Prim(self.prims.len() - 1))
+            }
+            Op::Revolve { profile, center, .. } => {
+                solid_only(self)?;
+                let c = self.ev3(center, f, "centre")?;
+                let (pts, roles) = self.profile_raw(*profile)?;
+                if pts.iter().any(|p| p[0] < 0.0) {
+                    return Err(GeomError(format!(
+                        "Revolve '{}': the profile crosses the axis (a point has negative radius); keep the profile at x >= 0",
+                        f.name
+                    )));
+                }
+                let n = pts.len();
+                for i in 0..n {
+                    for j in i + 2..n {
+                        if i == 0 && j == n - 1 {
+                            continue;
+                        }
+                        let (a, b, c2, d) = (pts[i], pts[(i + 1) % n], pts[j], pts[(j + 1) % n]);
+                        let (d1, d2, d3, d4) = (
+                            cross2(sub2(b, a), sub2(c2, a)),
+                            cross2(sub2(b, a), sub2(d, a)),
+                            cross2(sub2(d, c2), sub2(a, c2)),
+                            cross2(sub2(d, c2), sub2(b, c2)),
+                        );
+                        if d1 * d2 < 0.0 && d3 * d4 < 0.0 {
+                            return Err(GeomError(format!(
+                                "Revolve '{}': the profile '{}' crosses itself",
+                                f.name, roles[i]
+                            )));
+                        }
+                    }
+                }
+                let k = xf.xy.scale();
+                let o = xf.xy.apply([c[0], c[1]]);
+                let moved: Vec<V2> = pts.iter().map(|p| [p[0] * k, xf.zs * p[1]]).collect();
+                let (pts2, roles2) = ccw_polygon(&moved, &roles);
+                let rev = Revolved { c: [o[0], o[1], xf.zs * c[2] + xf.zt], pts: pts2, roles: roles2 };
+                let key = (f.id, xf.key(), suffix.to_string());
+                if let Some(&i) = self.memo.get(&key) {
+                    return Ok(Node::Prim(i));
+                }
+                self.prims.push(Arc::new(Prim::new_revolved(f.id, format!("{}{}", f.name, suffix), rev)));
                 self.memo.insert(key, self.prims.len() - 1);
                 Ok(Node::Prim(self.prims.len() - 1))
             }

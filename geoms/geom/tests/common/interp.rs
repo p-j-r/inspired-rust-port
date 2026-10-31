@@ -188,6 +188,11 @@ pub fn build(code: &str) -> Model {
             "rect" => Some(m.rect(&st(&a[0]), e2(&a[1]), e2(&a[2]))),
             "rounded_rect" => Some(m.rounded_rect(&st(&a[0]), e2(&a[1]), e2(&a[2]), expr(&a[3]))),
             "circle" => Some(m.circle(&st(&a[0]), e2(&a[1]), expr(&a[2]))),
+            "revolve_along" => {
+                let A::Path(k) = &a[1] else { panic!() };
+                Some(m.revolve_along(&st(&a[0]), axis_of(k), fid(&a[2], &ids), e3(&a[3])))
+            }
+            "revolve" => Some(m.revolve(&st(&a[0]), fid(&a[1], &ids), e3(&a[2]))),
             "cone_along" => {
                 let A::Path(k) = &a[1] else { panic!() };
                 Some(m.cone_along(&st(&a[0]), axis_of(k), e3(&a[2]), expr(&a[3]), expr(&a[4]), expr(&a[5])))

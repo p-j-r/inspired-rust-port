@@ -27,6 +27,7 @@
       "op": {
         "Extrude": {
           "profile": 1,
+          "axis": "Z",
           "z0": 0.0,
           "z1": 1.0,
           "taper_deg": 10.0

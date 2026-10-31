@@ -8,6 +8,7 @@ Geometry kernel staging for the nyx FEM stack, next to [`meshers/`](../meshers/R
 | [`docs/GEOM_HANDOFF.md`](docs/GEOM_HANDOFF.md) | The brief (scope, API contract, tests, steps A to D). |
 | [`docs/GEOMETRY_ARCHITECTURE.md`](docs/GEOMETRY_ARCHITECTURE.md) | The design and the reasons. Where it differs from the brief, the brief wins. |
 | [`docs/GEOM_HANDOFF_ADDENDUM_1.md`](docs/GEOM_HANDOFF_ADDENDUM_1.md) | Parameter-sweep support (signature, stable ids, fractions, `diff`). |
+| [`TODO.md`](TODO.md) | What is not implemented yet, with approach and size. |
 | [`PROVENANCE.md`](PROVENANCE.md) | What was taken from where (nothing), and the licence. |
 | [`geom/CHANGELOG.md`](geom/CHANGELOG.md) | One entry per delivered step, including conflicts found between the brief and the reference code. |
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## Revolve
+
+* `Revolve` (builders `revolve`, `revolve_along`): a full turn of a `Rect` or `Polygon` profile about the sweep axis through `center`; the
+  profile's `(x, y)` are radius (>= 0) and height along the axis. Segments off the axis become faces `swept:<profile role>`: cone sides,
+  cylinder walls and flat rings (new face types `CylSide`, `Annulus`, and a `flip` flag on cone sides so the normal always points out of the
+  solid), with a circle edge at every corner off the axis. Exact volume by Pappus, signed distance, projection and parametrisation. Same
+  clear-of-everything rule as the other curved bodies. A profile that crosses the axis or itself is refused. Golden: stepped bell; tests: tube,
+  bell, revolve about x, refusals, `to_rust` round trip.
+* The remaining work is in [`../TODO.md`](../TODO.md).
+
 ## Any sweep axis, cone bodies, Pml in the polyhedral path
 
 * **Cylinders, cones and extrusions along x or y.** `Cylinder.axis` is honoured, `Extrude` gained `axis` (serde default z; the profile's

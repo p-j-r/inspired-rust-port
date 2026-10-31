@@ -606,3 +606,81 @@ fn cone_frustum_bodies() {
     assert!(e.contains("cone 'base_on_floor'") && e.contains("air.zmin"), "{e}");
     assert_eq!(common::interp::build(&m.list.to_rust()).list, m.list);
 }
+
+#[test]
+fn revolved_profiles() {
+    // a tube (Rect profile off the axis): volume, six faces named after the profile edges, four circle edges
+    let mut m = Model::new_3d();
+    let air = m.box_("air", (-4.0, -4.0, -2.0), (4.0, 4.0, 6.0));
+    let prof = m.rect("section", (1.0, 0.0), (2.0, 3.0));
+    let tube = m.revolve("tube", prof, (0.0, 0.0, 0.0));
+    m.overlay(&[("air", air), ("steel", tube)]);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert!(close(ev.volume(1), PI * (4.0 - 1.0) * 3.0));
+    assert!(close(ev.volume(0), 8.0 * 8.0 * 8.0 - PI * 3.0 * 3.0));
+    let kinds: Vec<&str> = ev.faces().iter().filter(|f| f.name == "air|steel").map(|f| f.name.as_str()).collect();
+    assert_eq!(kinds.len(), 4); // outer wall, inner wall, bottom ring, top ring
+    assert_eq!((ev.faces().len(), ev.edges3().len()), (6 + 4, 12 + 4));
+    // the inner wall's normal points towards the axis (out of the metal), the outer wall's away from it
+    let inner = ev.faces().iter().position(|f| matches!(f.geom, geom::complex::FaceGeom::Quadric(geom::prim::Body::CylSide { r, .. }) if (r - 1.0).abs() < 1e-12)).unwrap();
+    let n_in = ev.oracle().project([0.1, 0.0, 1.5], EntityRef::Face(inner as u32)).unwrap();
+    assert!((n_in[0] - 1.0).abs() < 1e-14 && n_in[2] == 1.5);
+    assert_eq!(ev.classify([1.5, 0.0, 1.0]), Some(1));
+    assert_eq!(ev.classify([0.5, 0.0, 1.0]), Some(0));
+    // a bell: stepped profile with a slanted shoulder. Volume by Pappus on the polygon; faces: ring, wall, cone, wall, ring
+    let mut m = Model::new_3d();
+    let air = m.box_("air", (-5.0, -5.0, -1.0), (5.0, 5.0, 8.0));
+    let pts = [(0.0, 0.0), (3.0, 0.0), (3.0, 2.0), (1.5, 4.0), (1.5, 6.0), (0.0, 6.0)];
+    let bell_p = m.polygon_named("bell_profile", &pts, &["floor", "foot", "shoulder", "neck", "lid", "axis"]);
+    let bell = m.revolve("bell", bell_p, (0.0, 0.0, 0.0));
+    m.overlay(&[("air", air), ("bronze", bell)]);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    let exact = PI * 9.0 * 2.0 + PI * 2.0 * (9.0 + 4.5 + 2.25) / 3.0 * 1.0 + PI * 2.25 * 2.0;
+    // frustum between z = 2 and 4 has radii 3 -> 1.5 over height 2: pi h (r0^2 + r0 r1 + r1^2)/3 with h = 2
+    let exact = exact - PI * 2.0 * (9.0 + 4.5 + 2.25) / 3.0 * 1.0 + PI * 2.0 * (9.0 + 4.5 + 2.25) / 3.0;
+    assert!(close(ev.volume(1), exact), "{} vs {exact}", ev.volume(1));
+    let mut names: Vec<String> = ev.faces().iter().map(|f| f.name.clone()).collect();
+    names.sort();
+    names.dedup();
+    assert!(names.contains(&"air|bronze".to_string()));
+    assert_eq!(ev.faces().iter().filter(|f| f.name == "air|bronze").count(), 5);
+    // 5 swept faces + the 6 faces of the air box; circle edges at the four corners off the axis plus those of ring edges
+    assert_eq!(ev.edges3().iter().filter(|e| matches!(e.geom, geom::complex::EdgeGeom::Circle { .. })).count(), 4);
+    // the slanted shoulder: its normal points up and out
+    let sh = ev
+        .faces()
+        .iter()
+        .position(|f| matches!(f.geom, geom::complex::FaceGeom::Quadric(geom::prim::Body::ConeSide { .. })))
+        .unwrap();
+    let nrm = ev.facet_normals(sh as u32);
+    assert!(nrm[0][2] > 0.0, "{nrm:?}");
+    // a revolve about x of a rect: same volume, world coordinates
+    let mut m = Model::new_3d();
+    let air = m.box_("air", (-2.0, -4.0, -4.0), (8.0, 4.0, 4.0));
+    let prof = m.rect("section", (0.0, 1.0), (2.0, 3.0)); // radius 0..2, along the axis 1..3
+    let disk = m.revolve_along("disk", Axis::X, prof, (0.0, 0.0, 0.0));
+    m.overlay(&[("air", air), ("metal", disk)]);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert!(close(ev.volume(1), PI * 4.0 * 2.0));
+    assert_eq!(ev.classify([2.0, 1.0, 0.0]), Some(1));
+    assert_eq!(ev.classify([0.5, 1.0, 0.0]), Some(0));
+    assert_eq!(ev.classify([2.0, 3.0, 0.0]), Some(0));
+    // refusals and round trip
+    let mut m = Model::new_3d();
+    let air = m.box_("air", (-4.0, -4.0, -2.0), (4.0, 4.0, 6.0));
+    let bad = m.rect("crossing", (-1.0, 0.0), (1.0, 2.0));
+    let r = m.revolve("spin", bad, (0.0, 0.0, 0.0));
+    m.overlay(&[("air", air), ("r", r)]);
+    assert!(m.eval(Tier::Complex).err().unwrap().0.contains("crosses the axis"));
+    let mut m = Model::new_3d();
+    let air = m.box_("air", (-4.0, -4.0, -2.0), (4.0, 4.0, 6.0));
+    let prof = m.rect("touching", (1.0, -2.0), (2.0, 1.0)); // reaches the floor of the air box
+    let r = m.revolve("ring", prof, (0.0, 0.0, 0.0));
+    m.overlay(&[("air", air), ("r", r)]);
+    let e = m.eval(Tier::Complex).err().unwrap().0;
+    assert!(e.contains("revolve 'ring'") && e.contains("air.zmin"), "{e}");
+    assert_eq!(common::interp::build(&m.list.to_rust()).list, m.list);
+}

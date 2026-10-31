@@ -331,7 +331,7 @@ impl Evaluated {
             h.f64(e.t0).f64(e.t1);
         }
         // curved bodies are not part of the overlay: any change to one is more than a z change
-        for p in self.scene.as_ref()?.prims.iter().filter(|p| p.body.is_some()) {
+        for p in self.scene.as_ref()?.prims.iter().filter(|p| p.is_curved_solid()) {
             h.u64(p.key);
         }
         Some(h.finish())

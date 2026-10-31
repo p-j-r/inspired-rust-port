@@ -47,6 +47,10 @@ pub fn to_rust(l: &FeatureList) -> String {
             Op::Rect { min, max } => format!("m.rect({n}, {}, {})", t2(min), t2(max)),
             Op::RoundedRect { min, max, r } => format!("m.rounded_rect({n}, {}, {}, {})", t2(min), t2(max), e(r)),
             Op::Circle { center, r } => format!("m.circle({n}, {}, {})", t2(center), e(r)),
+            Op::Revolve { profile, axis: Axis::Z, center } => format!("m.revolve({n}, f{profile}, {})", t3(center)),
+            Op::Revolve { profile, axis, center } => {
+                format!("m.revolve_along({n}, Axis::{axis:?}, f{profile}, {})", t3(center))
+            }
             Op::Cone { base, axis: Axis::Z, r0, r1, h } => {
                 format!("m.cone({n}, {}, {}, {}, {})", t3(base), e(r0), e(r1), e(h))
             }

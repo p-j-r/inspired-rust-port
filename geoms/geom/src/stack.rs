@@ -121,7 +121,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
     let mut zs: Vec<(f64, usize)> = prims
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.body.is_none())
+        .filter(|(_, p)| !p.is_curved_solid())
         .flat_map(|(i, p)| [(p.z.0, i), (p.z.1, i)])
         .collect();
     zs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
@@ -152,7 +152,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
     for w in levels.windows(2) {
         let (z0, z1) = (w[0], w[1]);
         let active: Vec<bool> =
-            prims.iter().map(|p| p.body.is_none() && snap(p.z.0) <= z0 && snap(p.z.1) >= z1).collect();
+            prims.iter().map(|p| !p.is_curved_solid() && snap(p.z.0) <= z0 && snap(p.z.1) >= z1).collect();
         let exprs: Vec<Node> = scene.regions.iter().map(|r| substitute(&r.expr, &active).simplify(prims)).collect();
         if exprs.iter().all(|e| *e == Node::Empty) {
             continue;
@@ -601,6 +601,13 @@ impl crate::eval::Evaluated {
                     let pd = &cx.planar[plane as usize];
                     Surface::Plane { n: pd.n, d: pd.d }
                 }
+                FaceGeom::Quadric(crate::prim::Body::CylSide { c, r, .. }) => {
+                    Surface::Cylinder { c: cx.wv([c[0], c[1], 0.0]), axis: cx.wv([0.0, 0.0, 1.0]), r }
+                }
+                FaceGeom::Quadric(crate::prim::Body::Annulus { c, up, .. }) => Surface::Plane {
+                    n: cx.wv([0.0, 0.0, if up { 1.0 } else { -1.0 }]),
+                    d: c[2] * if up { 1.0 } else { -1.0 },
+                },
                 FaceGeom::Quadric(crate::prim::Body::Disk { c, up, .. }) => Surface::Plane {
                     n: cx.wv([0.0, 0.0, if up { 1.0 } else { -1.0 }]),
                     d: c[2] * if up { 1.0 } else { -1.0 },
@@ -638,73 +645,153 @@ impl crate::eval::Evaluated {
 /// Circle edges of the bodies added: centre, radius and the faces that meet there.
 type BodyCircles = Vec<(V3, f64, Vec<u32>)>;
 
+/// Faces `(role, geometry)` of a curved solid and its rim circles `(centre, radius, indices of the two faces)`.
+type SolidParts = (Vec<(String, crate::prim::Body)>, Vec<(V3, f64, [usize; 2])>);
+
+/// A curved solid of the scene: a single-surface body or a solid of revolution.
+enum Solid<'a> {
+    B(crate::prim::Body),
+    R(&'a crate::prim::Revolved),
+}
+
+impl Solid<'_> {
+    fn kind(&self) -> &'static str {
+        match self {
+            Solid::B(b) => b.kind(),
+            Solid::R(_) => "revolve",
+        }
+    }
+    fn bbox(&self) -> Aabb {
+        match self {
+            Solid::B(b) => b.bbox(),
+            Solid::R(r) => r.bbox(),
+        }
+    }
+    fn volume(&self) -> f64 {
+        match self {
+            Solid::B(b) => b.volume(),
+            Solid::R(r) => r.volume(),
+        }
+    }
+    fn surface_point(&self) -> V3 {
+        use crate::prim::Body;
+        match self {
+            Solid::B(Body::Sphere { c, r }) => [c[0] + r, c[1], c[2]],
+            Solid::B(Body::Torus { c, big, small }) => [c[0] + big + small, c[1], c[2]],
+            Solid::B(Body::Cone { c, r0, r1, h }) => [c[0] + 0.5 * (r0 + r1), c[1], c[2] + 0.5 * h],
+            Solid::B(_) => unreachable!(),
+            Solid::R(r) => r.surface_point(),
+        }
+    }
+    /// The faces (role, geometry) and the circle edges as pairs of face indices into that list with centre and radius.
+    fn parts(&self) -> SolidParts {
+        use crate::prim::Body;
+        match self {
+            Solid::B(Body::Cone { c, r0, r1, h }) => {
+                let (c, r0, r1, h) = (*c, *r0, *r1, *h);
+                let mut v = vec![("side".to_string(), Body::ConeSide { c, r0, r1, h, flip: false })];
+                let mut circles = vec![];
+                if r0 > 0.0 {
+                    v.push(("bottom".to_string(), Body::Disk { c, r: r0, up: false }));
+                    circles.push((c, r0, [0, v.len() - 1]));
+                }
+                if r1 > 0.0 {
+                    let top = [c[0], c[1], c[2] + h];
+                    v.push(("top".to_string(), Body::Disk { c: top, r: r1, up: true }));
+                    circles.push((top, r1, [0, v.len() - 1]));
+                }
+                (v, circles)
+            }
+            Solid::B(b) => (vec![("surface".to_string(), *b)], vec![]),
+            Solid::R(r) => {
+                let faces = r.faces();
+                let n = r.pts.len();
+                let index_of = |seg: usize| faces.iter().position(|f| f.seg == seg);
+                let mut circles = vec![];
+                for i in 0..n {
+                    // the corner pts[i] joins segment i-1 and segment i
+                    if r.pts[i][0] > 0.0 {
+                        if let (Some(a), Some(b)) = (index_of((i + n - 1) % n), index_of(i)) {
+                            circles.push(([r.c[0], r.c[1], r.c[2] + r.pts[i][1]], r.pts[i][0], [a, b]));
+                        }
+                    }
+                }
+                (faces.into_iter().map(|f| (f.role, f.body)).collect(), circles)
+            }
+        }
+    }
+}
+
 fn add_bodies(scene: &Scene, cx: &mut Complex, band: f64) -> GeomResult<BodyCircles> {
     use crate::prim::Body;
     let prims = &scene.prims;
-    let bodies: Vec<(usize, Body)> = prims.iter().enumerate().filter_map(|(i, p)| p.body.map(|b| (i, b))).collect();
+    let solids: Vec<(usize, Solid)> = prims
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| match (&p.body, &p.rev) {
+            (Some(b), _) => Some((i, Solid::B(*b))),
+            (_, Some(r)) => Some((i, Solid::R(r))),
+            _ => None,
+        })
+        .collect();
     let mut circles: BodyCircles = vec![];
-    if bodies.is_empty() {
+    if solids.is_empty() {
         return Ok(circles);
     }
     let nhost = cx.faces.len();
-    for (a, &(ia, ba)) in bodies.iter().enumerate() {
-        let name = &prims[ia].name;
+    for (a, (ia, sa)) in solids.iter().enumerate() {
+        let name = &prims[*ia].name;
         for fi in 0..nhost {
             let fname = &cx.faces[fi].name;
-            let clear = match ba {
-                Body::Sphere { c, r } => norm3(sub3(cx.facet_project(fi as u32, c), c)) > r + band,
-                _ => !ba.bbox().pad(band).overlaps(&cx.faces[fi].bbox),
+            let clear = match sa {
+                Solid::B(Body::Sphere { c, r }) => norm3(sub3(cx.facet_project(fi as u32, *c), *c)) > r + band,
+                _ => !sa.bbox().pad(band).overlaps(&cx.faces[fi].bbox),
             };
             if !clear {
                 return Err(GeomError(format!(
                     "{} '{name}' touches, crosses or encloses the face '{fname}'; a curved body must lie clear of every other face (its intersection curves are not implemented): move it by more than {band:.1e} m",
-                    ba.kind()
+                    sa.kind()
                 )));
             }
         }
-        for &(ib, bb) in &bodies[a + 1..] {
-            let other = &prims[ib].name;
-            let ok = match (ba, bb) {
-                (Body::Sphere { c: c1, r: r1 }, Body::Sphere { c: c2, r: r2 }) => {
-                    let d = norm3(sub3(c1, c2));
-                    d > r1 + r2 + band || d + r1.min(r2) < r1.max(r2) - band
+        for (ib, sb) in &solids[a + 1..] {
+            let other = &prims[*ib].name;
+            let ok = match (sa, sb) {
+                (Solid::B(Body::Sphere { c: c1, r: r1 }), Solid::B(Body::Sphere { c: c2, r: r2 })) => {
+                    let d = norm3(sub3(*c1, *c2));
+                    d > r1 + r2 + band || d + r1.min(*r2) < r1.max(*r2) - band
                 }
-                _ => !ba.bbox().pad(band).overlaps(&bb.bbox()),
+                _ => !sa.bbox().pad(band).overlaps(&sb.bbox()),
             };
             if !ok {
                 return Err(GeomError(format!(
                     "{} '{name}' and {} '{other}' intersect or touch; only disjoint bodies, or one sphere strictly inside another, are supported",
-                    ba.kind(),
-                    bb.kind()
+                    sa.kind(),
+                    sb.kind()
                 )));
             }
         }
     }
-    for &(ia, ba) in &bodies {
-        let p0 = match ba {
-            Body::Sphere { c, r } => [c[0] + r, c[1], c[2]],
-            Body::Torus { c, big, small } => [c[0] + big + small, c[1], c[2]],
-            Body::Cone { c, r0, r1, h } => [c[0] + 0.5 * (r0 + r1), c[1], c[2] + 0.5 * h],
-            _ => unreachable!(),
-        };
+    for (ia, sa) in &solids {
+        let p0 = sa.surface_point();
         let region_at = |inside: bool| -> Option<u32> {
             let bits: Vec<bool> =
-                prims.iter().enumerate().map(|(i, q)| if i == ia { inside } else { q.sdf3(p0, band) < 0.0 }).collect();
+                prims.iter().enumerate().map(|(i, q)| if i == *ia { inside } else { q.sdf3(p0, band) < 0.0 }).collect();
             scene.region_of(&|i| bits[i]).and_then(|s| cx.scene_to_region[s])
         };
         let (rin, rout) = (region_at(true), region_at(false));
         if rin == rout {
             continue;
         }
-        let v = ba.volume();
+        let v = sa.volume();
         if let Some(r) = rin {
             cx.regions[r as usize].measure += v;
-            cx.regions[r as usize].bbox = cx.regions[r as usize].bbox.union(&ba.bbox());
+            cx.regions[r as usize].bbox = cx.regions[r as usize].bbox.union(&sa.bbox());
         }
         if let Some(r) = rout {
             cx.regions[r as usize].measure -= v;
         }
-        let p = &prims[ia];
+        let p = &prims[*ia];
         let interface = match (rin, rout) {
             (Some(x), Some(y)) => {
                 let (mut a, mut b) = (cx.regions[x as usize].name.clone(), cx.regions[y as usize].name.clone());
@@ -715,19 +802,7 @@ fn add_bodies(scene: &Scene, cx: &mut Complex, band: f64) -> GeomResult<BodyCirc
             }
             _ => None,
         };
-        let parts: Vec<(&str, Body)> = match ba {
-            Body::Cone { c, r0, r1, h } => {
-                let mut v = vec![("side", Body::ConeSide { c, r0, r1, h })];
-                if r0 > 0.0 {
-                    v.push(("bottom", Body::Disk { c, r: r0, up: false }));
-                }
-                if r1 > 0.0 {
-                    v.push(("top", Body::Disk { c: [c[0], c[1], c[2] + h], r: r1, up: true }));
-                }
-                v
-            }
-            other => vec![("surface", other)],
-        };
+        let (parts, rims) = sa.parts();
         let first_id = cx.faces.len() as u32;
         for (role, part) in &parts {
             let name = interface.clone().unwrap_or_else(|| match scene.naming {
@@ -739,21 +814,13 @@ fn add_bodies(scene: &Scene, cx: &mut Complex, band: f64) -> GeomResult<BodyCirc
                 geom: FaceGeom::Quadric(*part),
                 first: rin,
                 second: rout,
-                prov: vec![Prov { feature: p.feature, instance: p.name.clone(), role: (*role).into() }],
+                prov: vec![Prov { feature: p.feature, instance: p.name.clone(), role: role.clone() }],
                 area: part.area(),
                 bbox: part.bbox(),
             });
         }
-        if let Body::Cone { c, r0, r1, h } = ba {
-            // circle edges: side with the bottom disk, side with the top disk
-            let mut next = first_id + 1;
-            if r0 > 0.0 {
-                circles.push((c, r0, vec![first_id, next]));
-                next += 1;
-            }
-            if r1 > 0.0 {
-                circles.push(([c[0], c[1], c[2] + h], r1, vec![first_id, next]));
-            }
+        for (c, r, [i, j]) in rims {
+            circles.push((c, r, vec![first_id + i as u32, first_id + j as u32]));
         }
     }
     if scene.naming == NameScheme::Numbered {

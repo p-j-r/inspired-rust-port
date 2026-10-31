@@ -393,6 +393,20 @@ pub fn tapered_frustum() -> Golden {
     Golden { name: "tapered_frustum", model: m, expected: ex }
 }
 
+/// A stepped bell (revolved polygon) in a box: Pappus volume, five swept faces.
+pub fn revolved_bell() -> Golden {
+    let mut m = Model::new_3d();
+    let air = m.box_("air", (-5.0, -5.0, -1.0), (5.0, 5.0, 8.0));
+    let pts = [(0.0, 0.0), (3.0, 0.0), (3.0, 2.0), (1.5, 4.0), (1.5, 6.0), (0.0, 6.0)];
+    let p = m.polygon_named("bell_profile", &pts, &["floor", "foot", "shoulder", "neck", "lid", "axis"]);
+    let bell = m.revolve("bell", p, (0.0, 0.0, 0.0));
+    m.overlay(&[("air", air), ("bronze", bell)]);
+    let v = PI * 9.0 * 2.0 + PI * 2.0 * (9.0 + 4.5 + 2.25) / 3.0 + PI * 2.25 * 2.0;
+    let mut e = exp("revolved stepped bell in a box", &[("air", 10.0 * 10.0 * 9.0 - v), ("bronze", v)], &[]);
+    e.names = vec![];
+    Golden { name: "revolved_bell", model: m, expected: e }
+}
+
 pub fn all_3d() -> Vec<Golden> {
     vec![
         bragg3("bragg_symmetric", true, true),
@@ -405,6 +419,7 @@ pub fn all_3d() -> Vec<Golden> {
         torus_in_box(),
         slanted_cut_box(),
         tapered_frustum(),
+        revolved_bell(),
     ]
 }
 
