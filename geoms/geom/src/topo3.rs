@@ -125,7 +125,7 @@ pub fn build(cx: &Complex) -> (Vec<Edge3>, Vec<Vertex>) {
                 let p = ov.vertices[vertex as usize].p;
                 (z1 - z0, Aabb::new([p[0], p[1], z0], [p[0], p[1], z1]))
             }
-            EdgeGeom::Segment { .. } => unreachable!(),
+            EdgeGeom::Segment { .. } | EdgeGeom::Circle { .. } => unreachable!(),
             EdgeGeom::Horizontal { edge, z } => {
                 let e = &ov.edges[edge as usize];
                 let mut b = e.bbox;
@@ -166,9 +166,12 @@ impl Complex {
         if let EdgeGeom::Segment { a, b } = self.edges3[e as usize].geom {
             return add3(a, mul3(sub3(b, a), u));
         }
+        if let EdgeGeom::Circle { c, r } = self.edges3[e as usize].geom {
+            return add3(c, [r * (u * TAU).cos(), r * (u * TAU).sin(), 0.0]);
+        }
         let ov = &self.stack.as_ref().expect("a layer stack").overlay;
         match self.edges3[e as usize].geom {
-            EdgeGeom::Segment { .. } => unreachable!(),
+            EdgeGeom::Segment { .. } | EdgeGeom::Circle { .. } => unreachable!(),
             EdgeGeom::Vertical { vertex, z0, z1 } => {
                 let p = ov.vertices[vertex as usize].p;
                 [p[0], p[1], z0 + u * (z1 - z0)]
@@ -187,6 +190,11 @@ impl Complex {
         (self.wv(q), u)
     }
     fn edge3_closest_internal(&self, e: u32, p: V3) -> (V3, f64) {
+        if let EdgeGeom::Circle { c, r } = self.edges3[e as usize].geom {
+            let d = sub3(p, c);
+            let u = (d[1].atan2(d[0]) / TAU).rem_euclid(1.0);
+            return (add3(c, [r * (u * TAU).cos(), r * (u * TAU).sin(), 0.0]), u);
+        }
         if let EdgeGeom::Segment { a, b } = self.edges3[e as usize].geom {
             let d = sub3(b, a);
             let u = (dot3(sub3(p, a), d) / dot3(d, d)).clamp(0.0, 1.0);
@@ -194,7 +202,7 @@ impl Complex {
         }
         let ov = &self.stack.as_ref().expect("a layer stack").overlay;
         match self.edges3[e as usize].geom {
-            EdgeGeom::Segment { .. } => unreachable!(),
+            EdgeGeom::Segment { .. } | EdgeGeom::Circle { .. } => unreachable!(),
             EdgeGeom::Vertical { vertex, z0, z1 } => {
                 let q = ov.vertices[vertex as usize].p;
                 let z = p[2].clamp(z0, z1);
@@ -256,7 +264,8 @@ impl Complex {
                     let e = &ov.edges[edge as usize];
                     2.0 * e.length + if e.v0 == e.v1 { 0.0 } else { 2.0 * (z1 - z0) }
                 }
-                FaceGeom::Quadric(_) | FaceGeom::Planar { .. } => 0.0,
+                FaceGeom::Quadric(b) => b.perimeter(),
+                FaceGeom::Planar { .. } => 0.0,
                 FaceGeom::Cap { cell, .. } => ov.regions[cell as usize]
                     .loops
                     .iter()

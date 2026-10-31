@@ -110,12 +110,38 @@ impl Poly3 {
     }
 }
 
-/// A curved solid with a closed analytic surface and no edges: a sphere or a torus (axis z). Exact volume, area, distance,
-/// projection and parametrisation (`u`: azimuth / major angle, `v`: polar / minor angle, both as fractions of a turn).
+/// A curved solid and the curved faces it is made of: sphere and torus (one closed face, no edges), and a cone frustum along z
+/// (a side, up to two end disks, and a circle edge where they meet). `ConeSide` and `Disk` are the faces of a `Cone`.
+/// Exact volume, area, distance, projection and parametrisation (`u`: azimuth, `v`: polar / minor angle / height / radius, as fractions).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Body {
-    Sphere { c: V3, r: f64 },
-    Torus { c: V3, big: f64, small: f64 },
+    Sphere {
+        c: V3,
+        r: f64,
+    },
+    Torus {
+        c: V3,
+        big: f64,
+        small: f64,
+    },
+    /// frustum from the base centre `c` up by `h`, radius `r0` at the bottom and `r1` at the top (either may be 0)
+    Cone {
+        c: V3,
+        r0: f64,
+        r1: f64,
+        h: f64,
+    },
+    ConeSide {
+        c: V3,
+        r0: f64,
+        r1: f64,
+        h: f64,
+    },
+    Disk {
+        c: V3,
+        r: f64,
+        up: bool,
+    },
 }
 
 impl Body {
@@ -123,18 +149,35 @@ impl Body {
         match self {
             Body::Sphere { .. } => "sphere",
             Body::Torus { .. } => "torus",
+            Body::Cone { .. } | Body::ConeSide { .. } => "cone",
+            Body::Disk { .. } => "plane",
         }
     }
     pub fn volume(&self) -> f64 {
+        let pi = std::f64::consts::PI;
         match self {
-            Body::Sphere { r, .. } => 4.0 / 3.0 * std::f64::consts::PI * r.powi(3),
-            Body::Torus { big, small, .. } => 2.0 * std::f64::consts::PI.powi(2) * big * small * small,
+            Body::Sphere { r, .. } => 4.0 / 3.0 * pi * r.powi(3),
+            Body::Torus { big, small, .. } => 2.0 * pi.powi(2) * big * small * small,
+            Body::Cone { r0, r1, h, .. } => pi * h * (r0 * r0 + r0 * r1 + r1 * r1) / 3.0,
+            _ => 0.0,
         }
     }
     pub fn area(&self) -> f64 {
+        let pi = std::f64::consts::PI;
         match self {
-            Body::Sphere { r, .. } => 4.0 * std::f64::consts::PI * r * r,
-            Body::Torus { big, small, .. } => 4.0 * std::f64::consts::PI.powi(2) * big * small,
+            Body::Sphere { r, .. } => 4.0 * pi * r * r,
+            Body::Torus { big, small, .. } => 4.0 * pi.powi(2) * big * small,
+            Body::Cone { .. } => 0.0,
+            Body::ConeSide { r0, r1, h, .. } => pi * (r0 + r1) * h.hypot(r0 - r1),
+            Body::Disk { r, .. } => pi * r * r,
+        }
+    }
+    /// Total length of the circle edges of a face of a cone.
+    pub fn perimeter(&self) -> f64 {
+        match self {
+            Body::ConeSide { r0, r1, .. } => TAU * (r0 + r1),
+            Body::Disk { r, .. } => TAU * r,
+            _ => 0.0,
         }
     }
     pub fn bbox(&self) -> Aabb {
@@ -144,7 +187,20 @@ impl Body {
                 let e = big + small;
                 Aabb::new([c[0] - e, c[1] - e, c[2] - small], [c[0] + e, c[1] + e, c[2] + small])
             }
+            Body::Cone { c, r0, r1, h } | Body::ConeSide { c, r0, r1, h } => {
+                let r = r0.max(*r1);
+                Aabb::new([c[0] - r, c[1] - r, c[2]], [c[0] + r, c[1] + r, c[2] + h])
+            }
+            Body::Disk { c, r, .. } => Aabb::new([c[0] - r, c[1] - r, c[2]], [c[0] + r, c[1] + r, c[2]]),
         }
+    }
+    /// Distance from `(rho, z)` (relative to the base centre) to the segment `a -> b`, and the nearest point.
+    fn seg(q: V2, a: V2, b: V2) -> (f64, V2) {
+        let d = sub2(b, a);
+        let l2 = dot2(d, d);
+        let t = if l2 > 0.0 { (dot2(sub2(q, a), d) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        let n = add2(a, mul2(d, t));
+        (dist2(q, n), n)
     }
     /// Signed distance (negative inside).
     pub fn sdf(&self, p: V3) -> f64 {
@@ -154,9 +210,24 @@ impl Body {
                 let d = sub3(p, *c);
                 (((d[0].hypot(d[1]) - big).powi(2) + d[2] * d[2]).sqrt()) - small
             }
+            Body::Cone { c, r0, r1, h } => {
+                let d = sub3(p, *c);
+                let q = [d[0].hypot(d[1]), d[2]];
+                let dist = [(0.0, 0.0, *r0, 0.0), (*r0, 0.0, *r1, *h), (*r1, *h, 0.0, *h)]
+                    .iter()
+                    .map(|&(x0, y0, x1, y1)| Body::seg(q, [x0, y0], [x1, y1]).0)
+                    .fold(f64::INFINITY, f64::min);
+                let inside = q[1] >= 0.0 && q[1] <= *h && q[0] <= r0 + (r1 - r0) * q[1] / h;
+                if inside {
+                    -dist
+                } else {
+                    dist
+                }
+            }
+            _ => f64::INFINITY,
         }
     }
-    /// Closest point of the surface.
+    /// Closest point of the surface (of the face, for `ConeSide` and `Disk`).
     pub fn project(&self, p: V3) -> V3 {
         match self {
             Body::Sphere { c, r } => {
@@ -181,9 +252,34 @@ impl Body {
                     add3(ring, mul3(e, small / n))
                 }
             }
+            Body::Cone { c, r0, r1, h } => {
+                let parts = [
+                    Body::ConeSide { c: *c, r0: *r0, r1: *r1, h: *h },
+                    Body::Disk { c: *c, r: *r0, up: false },
+                    Body::Disk { c: add3(*c, [0.0, 0.0, *h]), r: *r1, up: true },
+                ];
+                parts
+                    .iter()
+                    .map(|b| b.project(p))
+                    .min_by(|a, b| norm3(sub3(*a, p)).total_cmp(&norm3(sub3(*b, p))))
+                    .unwrap()
+            }
+            Body::ConeSide { c, r0, r1, h } => {
+                let d = sub3(p, *c);
+                let rho = d[0].hypot(d[1]);
+                let (ux, uy) = if rho == 0.0 { (1.0, 0.0) } else { (d[0] / rho, d[1] / rho) };
+                let (_, n) = Body::seg([rho, d[2]], [*r0, 0.0], [*r1, *h]);
+                [c[0] + n[0] * ux, c[1] + n[0] * uy, c[2] + n[1]]
+            }
+            Body::Disk { c, r, .. } => {
+                let d = sub3(p, *c);
+                let rho = d[0].hypot(d[1]);
+                let k = if rho > *r { r / rho } else { 1.0 };
+                [c[0] + d[0] * k, c[1] + d[1] * k, c[2]]
+            }
         }
     }
-    /// Outward unit normal at the surface point nearest `p`.
+    /// Outward unit normal at the surface point nearest `p` (outward from the solid).
     pub fn normal(&self, p: V3) -> V3 {
         match self {
             Body::Sphere { c, .. } => unit3(sub3(self.project(p), *c)),
@@ -193,9 +289,18 @@ impl Body {
                 let rho = d[0].hypot(d[1]).max(1e-300);
                 unit3(sub3(q, [c[0] + big * d[0] / rho, c[1] + big * d[1] / rho, c[2]]))
             }
+            Body::Cone { .. } => unit3(sub3(p, self.project(p))),
+            Body::ConeSide { c, r0, r1, h } => {
+                let d = sub3(self.project(p), *c);
+                let rho = d[0].hypot(d[1]);
+                let (ux, uy) = if rho == 0.0 { (1.0, 0.0) } else { (d[0] / rho, d[1] / rho) };
+                let s = h.hypot(r0 - r1);
+                [h / s * ux, h / s * uy, (r0 - r1) / s]
+            }
+            Body::Disk { up, .. } => [0.0, 0.0, if *up { 1.0 } else { -1.0 }],
         }
     }
-    /// Point at the fractions `(u, v)` of a turn.
+    /// Point at the fractions `(u, v)`.
     pub fn point_at(&self, u: f64, v: f64) -> V3 {
         let (a, b) = (u * TAU, v * TAU);
         match self {
@@ -208,6 +313,11 @@ impl Body {
                 let rho = big + small * b.cos();
                 [c[0] + rho * a.cos(), c[1] + rho * a.sin(), c[2] + small * b.sin()]
             }
+            Body::Cone { c, r0, r1, h } | Body::ConeSide { c, r0, r1, h } => {
+                let rho = r0 + (r1 - r0) * v;
+                [c[0] + rho * a.cos(), c[1] + rho * a.sin(), c[2] + h * v]
+            }
+            Body::Disk { c, r, .. } => [c[0] + v * r * a.cos(), c[1] + v * r * a.sin(), c[2]],
         }
     }
     /// Fractions of the surface point nearest `p`.
@@ -223,12 +333,25 @@ impl Body {
                 let rho = d[0].hypot(d[1]);
                 ((d[1].atan2(d[0]) / TAU).rem_euclid(1.0), (d[2].atan2(rho - big) / TAU).rem_euclid(1.0))
             }
+            Body::Cone { c, h, .. } | Body::ConeSide { c, h, .. } => {
+                let d = sub3(q, *c);
+                ((d[1].atan2(d[0]) / TAU).rem_euclid(1.0), (d[2] / h).clamp(0.0, 1.0))
+            }
+            Body::Disk { c, r, .. } => {
+                let d = sub3(q, *c);
+                (
+                    (d[1].atan2(d[0]) / TAU).rem_euclid(1.0),
+                    if *r > 0.0 { (d[0].hypot(d[1]) / r).clamp(0.0, 1.0) } else { 0.0 },
+                )
+            }
         }
     }
     pub fn radius_of_curvature(&self) -> f64 {
         match self {
             Body::Sphere { r, .. } => *r,
             Body::Torus { small, .. } => *small,
+            Body::Cone { r0, r1, .. } | Body::ConeSide { r0, r1, .. } => r0.max(*r1),
+            Body::Disk { r, .. } => *r,
         }
     }
     pub fn key(&self, h: &mut Hasher64) {
@@ -238,6 +361,12 @@ impl Body {
             }
             Body::Torus { c, big, small } => {
                 h.u64(8).f64(c[0]).f64(c[1]).f64(c[2]).f64(*big).f64(*small);
+            }
+            Body::Cone { c, r0, r1, h: hh } | Body::ConeSide { c, r0, r1, h: hh } => {
+                h.u64(9).f64(c[0]).f64(c[1]).f64(c[2]).f64(*r0).f64(*r1).f64(*hh);
+            }
+            Body::Disk { c, r, up } => {
+                h.u64(10).f64(c[0]).f64(c[1]).f64(c[2]).f64(*r).u64(*up as u64);
             }
         }
     }

@@ -522,3 +522,87 @@ fn cylinders_and_extrusions_along_x_and_y() {
     let face = ev.pml_regions().iter().find(|p| ev.regions()[p.region as usize].name == "air.pml_ymin").unwrap();
     assert_eq!(face.sides, [0, -1, 0]);
 }
+
+#[test]
+fn cone_frustum_bodies() {
+    let vol = |r0: f64, r1: f64, h: f64| PI * h * (r0 * r0 + r0 * r1 + r1 * r1) / 3.0;
+    let side_area = |r0: f64, r1: f64, h: f64| PI * (r0 + r1) * h.hypot(r0 - r1);
+    // a speaker-like diaphragm: a frustum floating in a box
+    let mut m = Model::new_3d();
+    let air = m.box_("air", (-3.0, -3.0, -1.0), (3.0, 3.0, 4.0));
+    let cone = m.cone("diaphragm", (0.0, 0.0, 0.0), 1.5, 0.5, 2.0);
+    m.overlay(&[("air", air), ("membrane", cone)]);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert!(close(ev.volume(1), vol(1.5, 0.5, 2.0)) && close(ev.volume(0), 6.0 * 6.0 * 5.0 - vol(1.5, 0.5, 2.0)));
+    let names: Vec<&str> = ev.faces().iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names.iter().filter(|n| **n == "air|membrane").count(), 3, "{names:?}");
+    assert_eq!((ev.faces().len(), ev.edges3().len()), (6 + 3, 12 + 2));
+    let side = ev
+        .faces()
+        .iter()
+        .position(|f| matches!(f.geom, geom::complex::FaceGeom::Quadric(geom::prim::Body::ConeSide { .. })))
+        .unwrap();
+    assert!(close(ev.faces()[side].area, side_area(1.5, 0.5, 2.0)));
+    // exact projection onto the slanted wall: the point (3, 0, 1) projects to the wall at z = 1 where the radius is 1.0
+    let q = ev.oracle().project([3.0, 0.0, 1.0], EntityRef::Face(side as u32)).unwrap();
+    let want = {
+        // foot of the perpendicular on the generator (1.5, 0) - (0.5, 2)
+        let (a, d): ([f64; 2], [f64; 2]) = ([1.5, 0.0], [-1.0, 2.0]);
+        let t = (((3.0 - a[0]) * d[0] + (1.0 - a[1]) * d[1]) / (d[0] * d[0] + d[1] * d[1])).clamp(0.0, 1.0);
+        [a[0] + t * d[0], a[1] + t * d[1]]
+    };
+    assert!((q[0] - want[0]).abs() < 1e-14 && q[1].abs() < 1e-14 && (q[2] - want[1]).abs() < 1e-14, "{q:?}");
+    assert_eq!(ev.classify([0.0, 0.0, 0.5]), Some(1));
+    assert_eq!(ev.classify([1.4, 0.0, 0.1]), Some(1));
+    assert_eq!(ev.classify([1.4, 0.0, 1.0]), Some(0));
+    // the rim circles are edges named after the two faces they join; their parametrisation round-trips
+    let rim = ev
+        .edges3()
+        .iter()
+        .position(|e| matches!(e.geom, geom::complex::EdgeGeom::Circle { .. }) && close(e.length, 2.0 * PI * 1.5))
+        .unwrap();
+    let f = ev.fractions_of(EntityRef::Edge(rim as u32), [0.0, 1.5, 0.0]).unwrap();
+    assert!((f.u - 0.25).abs() < 1e-12);
+    let p = ev.position_at(EntityRef::Edge(rim as u32), f).unwrap();
+    assert!((p[1] - 1.5).abs() < 1e-12 && p[2].abs() < 1e-12);
+    assert!(ev.resolve(&Selector::parse("kind(cone)").unwrap()).unwrap().set.ids == vec![side as u32]);
+    // tessellation area of the wall matches the exact area
+    let mesh = ev.tessellate(1e-3);
+    let area: f64 = mesh
+        .tris
+        .iter()
+        .zip(&mesh.tri_face)
+        .filter(|(_, &fc)| fc == side as u32)
+        .map(|(t, _)| tri_area(&mesh.points, t))
+        .sum();
+    assert!((area / side_area(1.5, 0.5, 2.0) - 1.0).abs() < 1e-2);
+    // a pointed cone has no top disk and one rim; along x it is the same in world coordinates
+    let mut m = Model::new_3d();
+    let air = m.box_("air", (-1.0, -3.0, -3.0), (5.0, 3.0, 3.0));
+    let c = m.cone_along("horn", Axis::X, (0.0, 0.0, 0.0), 1.0, 0.0, 3.0);
+    m.overlay(&[("air", air), ("horn", c)]);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert!(close(ev.volume(1), vol(1.0, 0.0, 3.0)));
+    assert_eq!((ev.faces().len(), ev.edges3().len()), (6 + 2, 12 + 1));
+    assert_eq!(ev.classify([0.5, 0.0, 0.0]), Some(1));
+    assert_eq!(ev.classify([2.8, 0.0, 0.5]), Some(0));
+    let disk = ev
+        .faces()
+        .iter()
+        .position(|f| matches!(f.geom, geom::complex::FaceGeom::Quadric(geom::prim::Body::Disk { .. })))
+        .unwrap();
+    assert!(
+        (ev.faces()[disk].bbox.lo[0]).abs() < 1e-15 && (ev.faces()[disk].bbox.hi[0]).abs() < 1e-15,
+        "the disk is the plane x = 0"
+    );
+    // refusals: a cone touching a wall
+    let mut m = Model::new_3d();
+    let air = m.box_("air", (-3.0, -3.0, 0.0), (3.0, 3.0, 4.0));
+    let c = m.cone("base_on_floor", (0.0, 0.0, 0.0), 1.0, 0.5, 1.0);
+    m.overlay(&[("air", air), ("c", c)]);
+    let e = m.eval(Tier::Complex).err().unwrap().0;
+    assert!(e.contains("cone 'base_on_floor'") && e.contains("air.zmin"), "{e}");
+    assert_eq!(common::interp::build(&m.list.to_rust()).list, m.list);
+}

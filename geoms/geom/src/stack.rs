@@ -513,10 +513,31 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         stack: Some(Box::new(stack)),
     };
     let mut cx = cx;
-    add_bodies(scene, &mut cx, band)?;
+    let circles = add_bodies(scene, &mut cx, band)?;
     let (edges3, vertices) = crate::topo3::build(&cx);
     cx.edges3 = edges3;
     cx.vertices = vertices;
+    for (c, r, fs) in circles {
+        // a circle edge has one seam vertex at angle 0
+        let seam = add3(c, [r, 0.0, 0.0]);
+        cx.vertices.push(Vertex { p: seam, name: String::new(), edges: vec![cx.edges3.len() as u32] });
+        let v = (cx.vertices.len() - 1) as u32;
+        let mut names: Vec<String> = fs.iter().map(|&f| cx.faces[f as usize].name.clone()).collect();
+        names.sort();
+        let mut bb = Aabb::EMPTY;
+        bb.grow(sub3(c, [r, r, 0.0]));
+        bb.grow(add3(c, [r, r, 0.0]));
+        cx.vertices[v as usize].name = names.join("/");
+        cx.edges3.push(Edge3 {
+            name: names.join("/"),
+            geom: EdgeGeom::Circle { c, r },
+            v0: v,
+            v1: v,
+            faces: fs,
+            length: TAU * r,
+            bbox: bb,
+        });
+    }
     cx.set_world_frame(scene.axis);
     Ok(cx)
 }
@@ -567,7 +588,7 @@ impl crate::eval::Evaluated {
                     match &st.overlay.curves[st.overlay.edges[edge as usize].curve as usize] {
                         crate::curve::Curve::Line { o, d } => {
                             let n = [d[1], -d[0], 0.0];
-                            Surface::Plane { n, d: n[0] * o[0] + n[1] * o[1] }
+                            Surface::Plane { n: cx.wv(n), d: n[0] * o[0] + n[1] * o[1] }
                         }
                         crate::curve::Curve::Circle { c, r } => {
                             Surface::Cylinder { c: cx.wv([c[0], c[1], 0.0]), axis: cx.wv([0.0, 0.0, 1.0]), r: *r }
@@ -580,7 +601,12 @@ impl crate::eval::Evaluated {
                     let pd = &cx.planar[plane as usize];
                     Surface::Plane { n: pd.n, d: pd.d }
                 }
+                FaceGeom::Quadric(crate::prim::Body::Disk { c, up, .. }) => Surface::Plane {
+                    n: cx.wv([0.0, 0.0, if up { 1.0 } else { -1.0 }]),
+                    d: c[2] * if up { 1.0 } else { -1.0 },
+                },
                 FaceGeom::Quadric(crate::prim::Body::Sphere { c, r }) => Surface::Sphere { c: cx.wv(c), r },
+                FaceGeom::Quadric(crate::prim::Body::Cone { .. } | crate::prim::Body::ConeSide { .. }) => continue,
                 FaceGeom::Quadric(crate::prim::Body::Torus { c, big, small }) => {
                     Surface::Torus { c, major: big, minor: small }
                 }
@@ -609,12 +635,16 @@ impl crate::eval::Evaluated {
 /// Curved bodies (sphere, torus) are added to the host stack as closed faces without edges, provided every body is clear of every
 /// other face and body (disjoint or nested spheres): the distance is exact for spheres, a bounding-box test for tori. Anything that
 /// touches or crosses is refused with both names; the intersection curves of general quadrics are not implemented.
-fn add_bodies(scene: &Scene, cx: &mut Complex, band: f64) -> GeomResult<()> {
+/// Circle edges of the bodies added: centre, radius and the faces that meet there.
+type BodyCircles = Vec<(V3, f64, Vec<u32>)>;
+
+fn add_bodies(scene: &Scene, cx: &mut Complex, band: f64) -> GeomResult<BodyCircles> {
     use crate::prim::Body;
     let prims = &scene.prims;
     let bodies: Vec<(usize, Body)> = prims.iter().enumerate().filter_map(|(i, p)| p.body.map(|b| (i, b))).collect();
+    let mut circles: BodyCircles = vec![];
     if bodies.is_empty() {
-        return Ok(());
+        return Ok(circles);
     }
     let nhost = cx.faces.len();
     for (a, &(ia, ba)) in bodies.iter().enumerate() {
@@ -623,7 +653,7 @@ fn add_bodies(scene: &Scene, cx: &mut Complex, band: f64) -> GeomResult<()> {
             let fname = &cx.faces[fi].name;
             let clear = match ba {
                 Body::Sphere { c, r } => norm3(sub3(cx.facet_project(fi as u32, c), c)) > r + band,
-                Body::Torus { .. } => !ba.bbox().pad(band).overlaps(&cx.faces[fi].bbox),
+                _ => !ba.bbox().pad(band).overlaps(&cx.faces[fi].bbox),
             };
             if !clear {
                 return Err(GeomError(format!(
@@ -654,6 +684,8 @@ fn add_bodies(scene: &Scene, cx: &mut Complex, band: f64) -> GeomResult<()> {
         let p0 = match ba {
             Body::Sphere { c, r } => [c[0] + r, c[1], c[2]],
             Body::Torus { c, big, small } => [c[0] + big + small, c[1], c[2]],
+            Body::Cone { c, r0, r1, h } => [c[0] + 0.5 * (r0 + r1), c[1], c[2] + 0.5 * h],
+            _ => unreachable!(),
         };
         let region_at = |inside: bool| -> Option<u32> {
             let bits: Vec<bool> =
@@ -673,28 +705,56 @@ fn add_bodies(scene: &Scene, cx: &mut Complex, band: f64) -> GeomResult<()> {
             cx.regions[r as usize].measure -= v;
         }
         let p = &prims[ia];
-        let name = match (rin, rout) {
+        let interface = match (rin, rout) {
             (Some(x), Some(y)) => {
                 let (mut a, mut b) = (cx.regions[x as usize].name.clone(), cx.regions[y as usize].name.clone());
                 if a > b {
                     std::mem::swap(&mut a, &mut b);
                 }
-                format!("{a}|{b}")
+                Some(format!("{a}|{b}"))
             }
-            (r, o) => match scene.naming {
-                crate::model::NameScheme::Feature => format!("{}.surface", p.name),
-                _ => format!("{}.surface", cx.regions[r.or(o).unwrap() as usize].name),
-            },
+            _ => None,
         };
-        cx.faces.push(Face {
-            name,
-            geom: FaceGeom::Quadric(ba),
-            first: rin,
-            second: rout,
-            prov: vec![Prov { feature: p.feature, instance: p.name.clone(), role: "surface".into() }],
-            area: ba.area(),
-            bbox: ba.bbox(),
-        });
+        let parts: Vec<(&str, Body)> = match ba {
+            Body::Cone { c, r0, r1, h } => {
+                let mut v = vec![("side", Body::ConeSide { c, r0, r1, h })];
+                if r0 > 0.0 {
+                    v.push(("bottom", Body::Disk { c, r: r0, up: false }));
+                }
+                if r1 > 0.0 {
+                    v.push(("top", Body::Disk { c: [c[0], c[1], c[2] + h], r: r1, up: true }));
+                }
+                v
+            }
+            other => vec![("surface", other)],
+        };
+        let first_id = cx.faces.len() as u32;
+        for (role, part) in &parts {
+            let name = interface.clone().unwrap_or_else(|| match scene.naming {
+                crate::model::NameScheme::Feature => format!("{}.{role}", p.name),
+                _ => format!("{}.{role}", cx.regions[rin.or(rout).unwrap() as usize].name),
+            });
+            cx.faces.push(Face {
+                name,
+                geom: FaceGeom::Quadric(*part),
+                first: rin,
+                second: rout,
+                prov: vec![Prov { feature: p.feature, instance: p.name.clone(), role: (*role).into() }],
+                area: part.area(),
+                bbox: part.bbox(),
+            });
+        }
+        if let Body::Cone { c, r0, r1, h } = ba {
+            // circle edges: side with the bottom disk, side with the top disk
+            let mut next = first_id + 1;
+            if r0 > 0.0 {
+                circles.push((c, r0, vec![first_id, next]));
+                next += 1;
+            }
+            if r1 > 0.0 {
+                circles.push(([c[0], c[1], c[2] + h], r1, vec![first_id, next]));
+            }
+        }
     }
     if scene.naming == NameScheme::Numbered {
         let mut count = vec![0usize; cx.regions.len()];
@@ -704,5 +764,5 @@ fn add_bodies(scene: &Scene, cx: &mut Complex, band: f64) -> GeomResult<()> {
             f.name = format!("{}.{}", cx.regions[r].name, count[r]);
         }
     }
-    Ok(())
+    Ok(circles)
 }

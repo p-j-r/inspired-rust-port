@@ -105,6 +105,11 @@ pub enum EdgeGeom {
         edge: u32,
         z: f64,
     },
+    /// a full circle in a plane perpendicular to the sweep axis (the rim of a cone), internal frame
+    Circle {
+        c: V3,
+        r: f64,
+    },
     /// a straight segment between two points (polyhedral models)
     Segment {
         a: V3,

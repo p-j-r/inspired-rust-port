@@ -242,7 +242,7 @@ pub fn stack_axis(list: &FeatureList) -> GeomResult<usize> {
     let mut found: Option<(usize, &str)> = None;
     for f in list.features.iter().filter(|f| !f.suppressed) {
         let a = match &f.op {
-            Op::Cylinder { axis, .. } | Op::Extrude { axis, .. } => axis.index(),
+            Op::Cylinder { axis, .. } | Op::Extrude { axis, .. } | Op::Cone { axis, .. } => axis.index(),
             _ => continue,
         };
         match found {
@@ -533,6 +533,29 @@ impl Builder<'_> {
                 } else {
                     Body::Sphere { c, r: a * k }
                 };
+                let key = (f.id, xf.key(), suffix.to_string());
+                if let Some(&i) = self.memo.get(&key) {
+                    return Ok(Node::Prim(i));
+                }
+                self.prims.push(Arc::new(Prim::new_body(f.id, format!("{}{}", f.name, suffix), body)));
+                self.memo.insert(key, self.prims.len() - 1);
+                Ok(Node::Prim(self.prims.len() - 1))
+            }
+            Op::Cone { base, r0, r1, h, .. } => {
+                solid_only(self)?;
+                let c = self.ev3(base, f, "base")?;
+                let (a, b, hh) =
+                    (self.ev(r0, f, "bottom radius")?, self.ev(r1, f, "top radius")?, self.ev(h, f, "height")?);
+                if a < 0.0 || b < 0.0 || a + b <= 0.0 {
+                    return Err(GeomError(format!("Cone '{}' needs non-negative radii, not both zero", f.name)));
+                }
+                pos("height", hh.abs())?;
+                let k = xf.xy.scale();
+                let (cx, cy) = (xf.xy.apply([c[0], c[1]])[0], xf.xy.apply([c[0], c[1]])[1]);
+                let (z_a, z_b) = (xf.zs * c[2] + xf.zt, xf.zs * (c[2] + hh) + xf.zt);
+                // a negative height or a mirror in z turns the cone over
+                let (zlo, zhi, ra, rb) = if z_a <= z_b { (z_a, z_b, a * k, b * k) } else { (z_b, z_a, b * k, a * k) };
+                let body = Body::Cone { c: [cx, cy, zlo], r0: ra, r1: rb, h: zhi - zlo };
                 let key = (f.id, xf.key(), suffix.to_string());
                 if let Some(&i) = self.memo.get(&key) {
                     return Ok(Node::Prim(i));

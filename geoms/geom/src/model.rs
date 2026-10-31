@@ -188,6 +188,16 @@ pub enum Op {
         center: [Expr; 3],
         r: Expr,
     },
+    /// 3D: cone frustum along the sweep axis from `base`, radius `r0` at the bottom and `r1` at the top (either may be 0); faces `side`,
+    /// `bottom`, `top`, circle edges where they meet. Must lie clear of every other face
+    Cone {
+        base: [Expr; 3],
+        #[serde(default = "z_axis")]
+        axis: Axis,
+        r0: Expr,
+        r1: Expr,
+        h: Expr,
+    },
     /// 3D: torus with axis z (one face `surface`; must not touch any other face)
     Torus {
         center: [Expr; 3],
@@ -275,6 +285,7 @@ impl Op {
             Op::RoundedRect { .. } => "RoundedRect",
             Op::Box { .. } => "Box",
             Op::Sphere { .. } => "Sphere",
+            Op::Cone { .. } => "Cone",
             Op::Torus { .. } => "Torus",
             Op::Cylinder { .. } => "Cylinder",
             Op::Extrude { .. } => "Extrude",
@@ -300,6 +311,7 @@ impl Op {
             Op::Circle { center, r } => center.iter().chain([r]).collect(),
             Op::Box { min, max } => min.iter().chain(max).collect(),
             Op::Sphere { center, r } => center.iter().chain([r]).collect(),
+            Op::Cone { base, r0, r1, h, .. } => base.iter().chain([r0, r1, h]).collect(),
             Op::Torus { center, major, minor } => center.iter().chain([major, minor]).collect(),
             Op::Cylinder { base, r, h, .. } => base.iter().chain([r, h]).collect(),
             Op::Extrude { z0, z1, taper_deg, .. } => {
@@ -609,6 +621,27 @@ impl Model {
         z1: impl Into<Expr>,
     ) -> FeatureId {
         self.push(name, Op::Extrude { profile, axis, z0: z0.into(), z1: z1.into(), taper_deg: None })
+    }
+    pub fn cone(
+        &mut self,
+        name: &str,
+        base: (impl Into<Expr>, impl Into<Expr>, impl Into<Expr>),
+        r0: impl Into<Expr>,
+        r1: impl Into<Expr>,
+        h: impl Into<Expr>,
+    ) -> FeatureId {
+        self.push(name, Op::Cone { base: e3(base), axis: Axis::Z, r0: r0.into(), r1: r1.into(), h: h.into() })
+    }
+    pub fn cone_along(
+        &mut self,
+        name: &str,
+        axis: Axis,
+        base: (impl Into<Expr>, impl Into<Expr>, impl Into<Expr>),
+        r0: impl Into<Expr>,
+        r1: impl Into<Expr>,
+        h: impl Into<Expr>,
+    ) -> FeatureId {
+        self.push(name, Op::Cone { base: e3(base), axis, r0: r0.into(), r1: r1.into(), h: h.into() })
     }
     pub fn sphere(
         &mut self,

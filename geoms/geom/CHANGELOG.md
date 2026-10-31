@@ -1,5 +1,25 @@
 # Changelog
 
+## Any sweep axis, cone bodies, Pml in the polyhedral path
+
+* **Cylinders, cones and extrusions along x or y.** `Cylinder.axis` is honoured, `Extrude` gained `axis` (serde default z; the profile's
+  `(x, y)` are the two other axes in cyclic order), builders `cylinder_along`, `extrude_along`, `cone_along`. All prismatic solids of a model must
+  share one sweep axis (mixed axes are refused naming both). Internally the model is built in the frame `(axis+1, axis+2, axis)` so the layer stack
+  is unchanged; every value the API returns is converted back (`Complex::wv/iv`): bounds, positions, normals, boxes, projections, fractions,
+  tessellation, stuffing surfaces, `Pml` sides and window. Box roles keep world names (`xmin ... zmax`).
+* **`Cone`** (frustum, either radius may be 0): a body with faces `side`, `bottom`, `top` and circle edges where they meet (seam vertex at angle 0),
+  exact volume, area, distance, projection (in the half plane `(rho, z)`), parametrisation. Clear-of-everything rule as for spheres and tori.
+  Goldens/tests: diaphragm in a box, pointed horn along x, touching floor refused.
+* **`Pml` in the polyhedral path** (rotated / tapered / slanted models): pad pieces are polyhedral boxes, regions split as in 2D and the prismatic 3D path;
+  pieces with no face are dropped.
+* Fixed on the way: the stuffing plane normals of lateral faces were not converted to world coordinates.
+
+### Still not implemented
+
+`Revolve` of general profiles, a sphere / torus / cone / cylinder cut by a plane or touching another solid (the faces would have to be split
+along intersection curves), skew or tilted cylinders, curved solids together with rotated / tapered / slanted polyhedra, bodies that touch the
+face of their host (a cone standing on a floor).
+
 ## Polyhedral path (rotations, tapers, slanted cuts)
 
 * **General planar-faced solids** (`planar.rs`): boxes in any orientation, `Rect`/`Polygon` extrusions (concave profiles are triangulated into
