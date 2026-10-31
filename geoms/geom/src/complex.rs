@@ -244,7 +244,7 @@ impl Complex {
         [v[p[0]], v[p[1]], v[p[2]]]
     }
     /// Converts the stored boxes and points of a freshly built stack complex to world coordinates and records the axis.
-    pub(crate) fn into_world_frame(&mut self, axis: usize) {
+    pub(crate) fn set_world_frame(&mut self, axis: usize) {
         self.axis = axis;
         let conv = |c: &Complex, b: Aabb| {
             if b.is_empty() {

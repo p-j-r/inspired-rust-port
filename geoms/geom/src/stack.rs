@@ -517,7 +517,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
     let (edges3, vertices) = crate::topo3::build(&cx);
     cx.edges3 = edges3;
     cx.vertices = vertices;
-    cx.into_world_frame(scene.axis);
+    cx.set_world_frame(scene.axis);
     Ok(cx)
 }
 
