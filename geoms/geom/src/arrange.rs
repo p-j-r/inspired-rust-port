@@ -950,6 +950,7 @@ fn finish(
         scene_to_region: fin,
         faces: vec![],
         edges3: vec![],
+        planar: vec![],
         stack: None,
     })
 }

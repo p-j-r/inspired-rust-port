@@ -134,11 +134,12 @@ fn unsupported_3d_content_is_refused_with_the_remedy() {
     let b = m.box_("b", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
     m.overlay(&[("b", b)]);
     assert!(refused(&m).contains("3D solid"));
+    // a slanted cut of a curved prism is not polyhedral
     let mut m = Model::new_3d();
-    let a = m.box_("a", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    let a = m.cylinder("pin", (0.0, 0.0, 0.0), 0.5, 1.0);
     m.overlay(&[("a", a)]);
-    m.cut("slant", (1.0, 0.0, 1.0), 1.0, Keep::Below);
-    assert!(refused(&m).contains("slanted"));
+    m.cut("slant", (1.0, 0.0, 1.0), 0.5, Keep::Below);
+    assert!(refused(&m).contains("Cylinder 'pin'") && refused(&m).contains("slanted"));
     let e = three_d(|m| {
         let a = m.push(
             "c",
@@ -148,7 +149,7 @@ fn unsupported_3d_content_is_refused_with_the_remedy() {
     });
     assert!(e.contains("Cylinder 'c'") && e.contains("along z"), "{e}");
     let e = three_d(|m| {
-        let a = m.box_("a", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+        let a = m.cylinder("pin", (0.0, 0.0, 0.0), 0.5, 1.0);
         let t = m.push(
             "tilt",
             Op::Transform {
@@ -162,7 +163,7 @@ fn unsupported_3d_content_is_refused_with_the_remedy() {
         );
         vec![("a", t)]
     });
-    assert!(e.contains("Transform 'tilt'") && e.contains("about z"), "{e}");
+    assert!(e.contains("Cylinder 'pin'") && e.contains("rotated, tapered or slanted"), "{e}");
     // z levels that are almost, but not exactly, equal
     let e = three_d(|m| {
         let a = m.box_("low", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));

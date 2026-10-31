@@ -51,7 +51,12 @@ pub fn to_rust(l: &FeatureList) -> String {
             Op::Torus { center, major, minor } => format!("m.torus({n}, {}, {}, {})", t3(center), e(major), e(minor)),
             Op::Box { min, max } => format!("m.box_({n}, {}, {})", t3(min), t3(max)),
             Op::Cylinder { base, axis: Axis::Z, r, h } => format!("m.cylinder({n}, {}, {}, {})", t3(base), e(r), e(h)),
-            Op::Extrude { profile, z0, z1 } => format!("m.extrude({n}, f{profile}, {}, {})", e(z0), e(z1)),
+            Op::Extrude { profile, z0, z1, taper_deg: Some(t) } => {
+                format!("m.extrude_tapered({n}, f{profile}, {}, {}, {})", e(z0), e(z1), e(t))
+            }
+            Op::Extrude { profile, z0, z1, taper_deg: None } => {
+                format!("m.extrude({n}, f{profile}, {}, {})", e(z0), e(z1))
+            }
             Op::Ellipse { center, radii, angle_deg } => {
                 format!("m.ellipse({n}, {}, {}, {})", t2(center), t2(radii), e(angle_deg))
             }

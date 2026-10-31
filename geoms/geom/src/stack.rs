@@ -478,7 +478,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         match f.geom {
             FaceGeom::Lateral { edge, z0, .. } => (fe, ins, ro, 0, edge, (z0 / tol).round() as i64),
             FaceGeom::Cap { cell, z } => (fe, ins, ro, 1, cell, (z / tol).round() as i64),
-            FaceGeom::Quadric(_) => (fe, ins, ro, 2, 0, 0),
+            FaceGeom::Quadric(_) | FaceGeom::Planar { .. } => (fe, ins, ro, 2, 0, 0),
         }
     };
     let mut keyed: Vec<_> = faces.into_iter().map(|f| (fkey(&f), f)).collect();
@@ -506,6 +506,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         scene_to_region: fin,
         faces,
         edges3: vec![],
+        planar: vec![],
         stack: Some(Box::new(stack)),
     };
     let mut cx = cx;
@@ -571,6 +572,10 @@ impl crate::eval::Evaluated {
                     }
                 }
                 FaceGeom::Cap { z, .. } => Surface::Plane { n: [0.0, 0.0, 1.0], d: z },
+                FaceGeom::Planar { plane, .. } => {
+                    let pd = &cx.planar[plane as usize];
+                    Surface::Plane { n: pd.n, d: pd.d }
+                }
                 FaceGeom::Quadric(crate::prim::Body::Sphere { c, r }) => Surface::Sphere { c, r },
                 FaceGeom::Quadric(crate::prim::Body::Torus { c, big, small }) => {
                     Surface::Torus { c, major: big, minor: small }

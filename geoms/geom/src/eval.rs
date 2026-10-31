@@ -43,7 +43,11 @@ impl Evaluator {
     }
 
     pub fn eval(&mut self, list: &FeatureList, tier: Tier) -> GeomResult<Evaluated> {
-        let scene = build_scene(list, &mut self.cache)?;
+        let scene = if crate::planar::needs_planar(list) {
+            crate::planar::build_scene(list, &mut self.cache)?
+        } else {
+            build_scene(list, &mut self.cache)?
+        };
         let bounds = scene.bounds;
         let mut warnings = scene.warnings.clone();
         let mut ev = Evaluated {
@@ -57,7 +61,9 @@ impl Evaluator {
             bounds,
         };
         if tier >= Tier::Complex {
-            let cx = if list.dim == 3 {
+            let cx = if crate::planar::needs_planar(list) {
+                crate::planar::build(&scene, &mut self.cache)?
+            } else if list.dim == 3 {
                 crate::stack::build(&scene, &mut self.cache)?
             } else {
                 arrange(&scene, &mut self.cache)?

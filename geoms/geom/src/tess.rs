@@ -33,7 +33,7 @@ fn in_tri(p: &[V3], t: [u32; 3], q: u32) -> bool {
 }
 
 /// Triangulates a counter-clockwise outer loop with clockwise holes (indices into `p`).
-fn triangulate(p: &[V3], outer: Vec<u32>, mut holes: Vec<Vec<u32>>) -> Vec<[u32; 3]> {
+pub(crate) fn triangulate(p: &[V3], outer: Vec<u32>, mut holes: Vec<Vec<u32>>) -> Vec<[u32; 3]> {
     let mut poly = outer;
     let xmax = |h: &Vec<u32>| h.iter().map(|&i| p[i as usize][0]).fold(f64::NEG_INFINITY, f64::max);
     holes.sort_by(|a, b| xmax(b).total_cmp(&xmax(a)));
@@ -196,9 +196,12 @@ impl Evaluated {
     pub fn tessellate(&self, max_dev: f64) -> DisplayMesh {
         let cx = self.complex();
         let big = self.bounds().diagonal().max(1.0) * 4.0;
-        let Some(st) = &cx.stack else { return cx.tessellate2d(max_dev, big) };
-        let ov = &st.overlay;
-        let flat = ov.tessellate2d(max_dev, big);
+        if cx.dim == 2 {
+            return cx.tessellate2d(max_dev, big);
+        }
+        let empty = Complex::default();
+        let ov = cx.stack.as_ref().map_or(&empty, |s| &s.overlay);
+        let flat = if cx.stack.is_some() { ov.tessellate2d(max_dev, big) } else { DisplayMesh::default() };
         let mut m = DisplayMesh::default();
         for (fi, f) in cx.faces.iter().enumerate() {
             let fi = fi as u32;
@@ -217,6 +220,18 @@ impl Evaluated {
                         m.tri_face.extend([fi, fi]);
                         m.segs.extend([[a, c], [b, d]]);
                         m.seg_edge.extend([fi, fi]);
+                    }
+                }
+                FaceGeom::Planar { plane, cell } => {
+                    let pd = &cx.planar[plane as usize];
+                    let flat = pd.cx.tessellate2d(max_dev, big);
+                    let base = m.points.len() as u32;
+                    m.points.extend(flat.points.iter().map(|p| cx.plane_lift(plane, [p[0], p[1]])));
+                    for (t, &c) in flat.tris.iter().zip(&flat.tri_face) {
+                        if c == cell {
+                            m.tris.push([base + t[0], base + t[1], base + t[2]]);
+                            m.tri_face.push(fi);
+                        }
                     }
                 }
                 FaceGeom::Quadric(b) => {

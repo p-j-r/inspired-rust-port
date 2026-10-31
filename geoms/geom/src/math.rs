@@ -265,3 +265,75 @@ impl Xf3 {
         .map(f)
     }
 }
+
+/// General affine map of space (rotations about any axis, mirrors, uniform scale, translation), used by polyhedral solids.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Aff3 {
+    pub m: [[f64; 3]; 3],
+    pub t: V3,
+}
+
+impl Aff3 {
+    pub const ID: Aff3 = Aff3 { m: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], t: [0.0; 3] };
+    pub fn apply(&self, p: V3) -> V3 {
+        let r = |i: usize| self.m[i][0] * p[0] + self.m[i][1] * p[1] + self.m[i][2] * p[2] + self.t[i];
+        [r(0), r(1), r(2)]
+    }
+    pub fn det(&self) -> f64 {
+        let m = &self.m;
+        m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+            + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+    }
+    /// `self` applied after `o`.
+    pub fn after(&self, o: &Aff3) -> Aff3 {
+        let mut m = [[0.0; 3]; 3];
+        for (i, row) in m.iter_mut().enumerate() {
+            for (j, x) in row.iter_mut().enumerate() {
+                *x = (0..3).map(|k| self.m[i][k] * o.m[k][j]).sum();
+            }
+        }
+        Aff3 { m, t: self.apply(o.t) }
+    }
+    pub fn translate(t: V3) -> Aff3 {
+        Aff3 { t, ..Aff3::ID }
+    }
+    pub fn scaling(s: f64, about: V3) -> Aff3 {
+        Aff3 { m: [[s, 0.0, 0.0], [0.0, s, 0.0], [0.0, 0.0, s]], t: mul3(about, 1.0 - s) }
+    }
+    /// Reflection across the plane `p[axis] = at`.
+    pub fn mirror(axis: usize, at: f64) -> Aff3 {
+        let mut a = Aff3::ID;
+        a.m[axis][axis] = -1.0;
+        a.t[axis] = 2.0 * at;
+        a
+    }
+    /// Rotation by `rad` about the line through `about` along the unit vector `k` (Rodrigues).
+    pub fn rotation(k: V3, rad: f64, about: V3) -> Aff3 {
+        let (s, c) = rad.sin_cos();
+        let m = [
+            [c + k[0] * k[0] * (1.0 - c), k[0] * k[1] * (1.0 - c) - k[2] * s, k[0] * k[2] * (1.0 - c) + k[1] * s],
+            [k[1] * k[0] * (1.0 - c) + k[2] * s, c + k[1] * k[1] * (1.0 - c), k[1] * k[2] * (1.0 - c) - k[0] * s],
+            [k[2] * k[0] * (1.0 - c) - k[1] * s, k[2] * k[1] * (1.0 - c) + k[0] * s, c + k[2] * k[2] * (1.0 - c)],
+        ];
+        let r = Aff3 { m, t: [0.0; 3] };
+        Aff3::translate(about).after(&r).after(&Aff3::translate(mul3(about, -1.0)))
+    }
+    pub fn key(&self) -> [u64; 12] {
+        let f = |v: f64| if v == 0.0 { 0 } else { v.to_bits() };
+        [
+            self.m[0][0],
+            self.m[0][1],
+            self.m[0][2],
+            self.m[1][0],
+            self.m[1][1],
+            self.m[1][2],
+            self.m[2][0],
+            self.m[2][1],
+            self.m[2][2],
+            self.t[0],
+            self.t[1],
+            self.t[2],
+        ]
+        .map(f)
+    }
+}

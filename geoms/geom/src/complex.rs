@@ -66,6 +66,8 @@ pub enum FaceGeom {
     Cap { cell: u32, z: f64 },
     /// a closed curved surface (sphere, torus) without edges, from a `Body`
     Quadric(crate::prim::Body),
+    /// a cell of a plane of a polyhedral model: `plane` indexes `Complex::planar`, `cell` a region of that plane's 2D complex
+    Planar { plane: u32, cell: u32 },
 }
 
 #[derive(Clone, Debug)]
@@ -80,11 +82,34 @@ pub struct Face {
     pub bbox: Aabb,
 }
 
+/// A plane of a polyhedral model with the 2D complex of the cells on it (coordinates `(u, v)` from the origin `o`).
+#[derive(Clone, Debug)]
+pub struct PlaneData {
+    pub n: V3,
+    pub d: f64,
+    pub o: V3,
+    pub u: V3,
+    pub v: V3,
+    pub cx: Complex,
+}
+
 /// Where a 3D edge lies: a vertical run above an overlay vertex, or an overlay edge at a level.
 #[derive(Clone, Debug)]
 pub enum EdgeGeom {
-    Vertical { vertex: u32, z0: f64, z1: f64 },
-    Horizontal { edge: u32, z: f64 },
+    Vertical {
+        vertex: u32,
+        z0: f64,
+        z1: f64,
+    },
+    Horizontal {
+        edge: u32,
+        z: f64,
+    },
+    /// a straight segment between two points (polyhedral models)
+    Segment {
+        a: V3,
+        b: V3,
+    },
 }
 
 /// A 3D edge: shared by two or more face fragments (three or more at a junction of regions).
@@ -125,7 +150,7 @@ pub struct Loop {
     pub outer: Option<u32>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Complex {
     pub dim: u8,
     pub tol: f64,
@@ -142,6 +167,8 @@ pub struct Complex {
     pub faces: Vec<Face>,
     /// 3D only: crease edges between face fragments (see `topo3.rs`); `vertices` holds their end points
     pub edges3: Vec<Edge3>,
+    /// polyhedral models: the planes that carry faces, each with the 2D complex of its cells
+    pub planar: Vec<PlaneData>,
     pub stack: Option<Box<crate::stack::LayerStack>>,
 }
 
@@ -257,7 +284,7 @@ impl Complex {
                 FaceGeom::Lateral { edge, .. } => {
                     Some(&self.overlay().curves[self.overlay().edges[edge as usize].curve as usize])
                 }
-                FaceGeom::Cap { .. } | FaceGeom::Quadric(_) => None,
+                FaceGeom::Cap { .. } | FaceGeom::Quadric(_) | FaceGeom::Planar { .. } => None,
             }
         } else {
             Some(&self.curves[self.edges[i as usize].curve as usize])
@@ -304,6 +331,7 @@ impl Complex {
                         .collect()
                 }
                 FaceGeom::Cap { .. } => vec![[0.0, 0.0, sign]],
+                FaceGeom::Planar { plane, .. } => vec![mul3(self.planar[plane as usize].n, sign)],
                 FaceGeom::Quadric(b) => [(0.25, 0.25), (0.5, 0.5), (0.75, 0.75)]
                     .iter()
                     .map(|&(u, v)| mul3(b.normal(b.point_at(u, v)), sign))
@@ -333,8 +361,12 @@ impl Complex {
         if self.dim == 2 {
             return to3(self.project_edge(i, [p[0], p[1]]));
         }
+        if let FaceGeom::Planar { plane, cell } = self.faces[i as usize].geom {
+            return self.planar_project(plane, cell, p);
+        }
         let ov = self.overlay();
         match self.faces[i as usize].geom {
+            FaceGeom::Planar { .. } => unreachable!(),
             FaceGeom::Quadric(b) => b.project(p),
             FaceGeom::Lateral { edge, z0, z1 } => {
                 let q = ov.project_edge(edge, [p[0], p[1]]);
@@ -365,8 +397,25 @@ impl Complex {
             let (c, t0, t1) = self.curve_of(i);
             return (0..=6).map(|k| to3(c.eval(t0 + (t1 - t0) * k as f64 / 6.0))).collect();
         }
+        if let FaceGeom::Planar { plane, cell } = self.faces[i as usize].geom {
+            let pd = &self.planar[plane as usize];
+            let mut v: Vec<V3> = vec![];
+            for &l in &pd.cx.regions[cell as usize].loops {
+                for &(e, fwd) in &pd.cx.loops[l as usize].edges {
+                    let ed = &pd.cx.edges[e as usize];
+                    let q = pd.cx.curves[ed.curve as usize].eval(if fwd { ed.t0 } else { ed.t1 });
+                    v.push(self.plane_lift(plane, q));
+                }
+            }
+            v.truncate(48);
+            if let Some(q) = crate::stack::interior_point(&pd.cx, cell) {
+                v.push(self.plane_lift(plane, q));
+            }
+            return v;
+        }
         let ov = self.overlay();
         match self.faces[i as usize].geom {
+            FaceGeom::Planar { .. } => unreachable!(),
             FaceGeom::Quadric(b) => (0..4)
                 .flat_map(|u| (0..=4).map(move |v| (u, v)))
                 .map(|(u, v)| b.point_at(u as f64 / 4.0, v as f64 / 4.0))
@@ -403,10 +452,36 @@ impl Complex {
         }
     }
 
+    pub fn plane_lift(&self, plane: u32, q: V2) -> V3 {
+        let pd = &self.planar[plane as usize];
+        add3(pd.o, add3(mul3(pd.u, q[0]), mul3(pd.v, q[1])))
+    }
+
+    /// Closest point of a planar cell to `p`.
+    fn planar_project(&self, plane: u32, cell: u32, p: V3) -> V3 {
+        let pd = &self.planar[plane as usize];
+        let d = sub3(p, pd.o);
+        let xy = [dot3(d, pd.u), dot3(d, pd.v)];
+        if pd.cx.locate(xy) == Some(cell) {
+            return self.plane_lift(plane, xy);
+        }
+        let mut best: Option<(f64, V2)> = None;
+        for &l in &pd.cx.regions[cell as usize].loops {
+            for &(e, _) in &pd.cx.loops[l as usize].edges {
+                let q = pd.cx.project_edge(e, xy);
+                let dd = dist2(q, xy);
+                if best.is_none_or(|b| dd < b.0) {
+                    best = Some((dd, q));
+                }
+            }
+        }
+        best.map_or(p, |b| self.plane_lift(plane, b.1))
+    }
+
     /// 3D self-checks: every face separates two different sides, volumes are positive, and every region is closed
     /// (the sum of its outward area vectors vanishes: the lateral faces and the caps balance in x, y and z).
     fn check3(&self) -> Result<(), String> {
-        let ov = self.overlay();
+        let ov = self.stack.as_ref().map(|s| &s.overlay);
         let scale = self.regions.iter().map(|r| r.bbox.diagonal()).fold(0.0, f64::max).max(1e-300);
         let mut flux = vec![[0.0f64; 3]; self.regions.len()];
         for f in &self.faces {
@@ -414,7 +489,9 @@ impl Complex {
                 return Err(format!("face '{}' has the same region on both sides", f.name));
             }
             let v = match f.geom {
+                FaceGeom::Planar { plane, .. } => mul3(self.planar[plane as usize].n, f.area),
                 FaceGeom::Lateral { edge, z0, z1 } => {
+                    let ov = ov.expect("a layer stack");
                     let e = &ov.edges[edge as usize];
                     let c = &ov.curves[e.curve as usize];
                     let (a, b) = (c.eval(e.t0), c.eval(e.t1));

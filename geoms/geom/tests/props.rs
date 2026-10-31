@@ -202,3 +202,45 @@ proptest! {
         }
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 150, failure_persistence: None, ..ProptestConfig::default() })]
+
+    #[test]
+    fn random_polyhedral_models_never_panic_and_stay_closed(
+        boxes in proptest::collection::vec((coord(), coord(), coord(), 0.5f64..2.5, 0.5f64..2.5, 0.5f64..2.5, 0.0f64..90.0, 0u8..3), 1..4),
+        op in 0u8..3,
+        cut in proptest::option::of((-1i32..2, -1i32..2, -1i32..2, -2.0f64..2.0)),
+    ) {
+        let mut m = Model::new_3d();
+        let ids: Vec<FeatureId> = boxes
+            .iter()
+            .enumerate()
+            .map(|(i, &(x, y, z, a, b, c, deg, ax))| {
+                let bx = m.box_(&format!("b{i}"), (x, y, z), (x + a, y + b, z + c));
+                let axis = [Axis::X, Axis::Y, Axis::Z][ax as usize];
+                m.transform(&format!("t{i}"), bx, vec![TStep::Rotate { axis, deg: deg.into(), about: [x.into(), y.into(), z.into()] }])
+            })
+            .collect();
+        let mut regs: Vec<(String, FeatureId)> = ids.iter().enumerate().map(|(i, &id)| (format!("R{i}"), id)).collect();
+        if ids.len() > 1 {
+            let id = match op {
+                0 => m.union("u", &ids[..2]),
+                1 => m.difference("d", ids[0], &ids[1..2]),
+                _ => m.intersect("i", &ids[..2]),
+            };
+            regs.push(("X".into(), id));
+        }
+        let regs: Vec<(&str, FeatureId)> = regs.iter().map(|(n, i)| (n.as_str(), *i)).collect();
+        m.overlay(&regs);
+        if let Some((a, b, c, off)) = cut {
+            if (a, b, c) != (0, 0, 0) {
+                m.cut("sym", (a as f64, b as f64, c as f64), off, Keep::Below);
+            }
+        }
+        if let Some(ev) = ok_or_refusal(m.eval(Tier::Complex)) {
+            ev.complex().check().unwrap();
+            for r in ev.regions() { prop_assert!(r.measure >= -1e-9); }
+        }
+    }
+}

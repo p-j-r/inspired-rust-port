@@ -9,6 +9,7 @@ pub mod expr;
 pub mod labels;
 pub mod math;
 pub mod model;
+pub mod planar;
 pub mod prim;
 pub mod print;
 pub mod query;

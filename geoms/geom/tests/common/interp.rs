@@ -192,6 +192,9 @@ pub fn build(code: &str) -> Model {
             "torus" => Some(m.torus(&st(&a[0]), e3(&a[1]), expr(&a[2]), expr(&a[3]))),
             "box_" => Some(m.box_(&st(&a[0]), e3(&a[1]), e3(&a[2]))),
             "cylinder" => Some(m.cylinder(&st(&a[0]), e3(&a[1]), expr(&a[2]), expr(&a[3]))),
+            "extrude_tapered" => {
+                Some(m.extrude_tapered(&st(&a[0]), fid(&a[1], &ids), expr(&a[2]), expr(&a[3]), expr(&a[4])))
+            }
             "extrude" => Some(m.extrude(&st(&a[0]), fid(&a[1], &ids), expr(&a[2]), expr(&a[3]))),
             "ellipse" => Some(m.ellipse(&st(&a[0]), e2(&a[1]), e2(&a[2]), expr(&a[3]))),
             "polygon" | "polygon_named" => {

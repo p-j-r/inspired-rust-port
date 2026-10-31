@@ -46,6 +46,70 @@ pub struct DSeg {
     pub role: String,
 }
 
+/// A convex polyhedron: planar faces whose rings are counter-clockwise seen from outside.
+#[derive(Clone, Debug)]
+pub struct Poly3 {
+    pub faces: Vec<PFace>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PFace {
+    pub ring: Vec<V3>,
+    pub role: String,
+    /// outward unit normal and plane offset (`n . p = d`)
+    pub n: V3,
+    pub d: f64,
+}
+
+impl Poly3 {
+    /// Builds a polyhedron from face rings in any orientation; each ring is turned to point away from the centroid.
+    pub fn new(rings: Vec<(Vec<V3>, String)>) -> Poly3 {
+        let pts: Vec<V3> = rings.iter().flat_map(|r| r.0.iter().copied()).collect();
+        let c = mul3(pts.iter().fold([0.0; 3], |a, p| add3(a, *p)), 1.0 / pts.len() as f64);
+        let faces = rings
+            .into_iter()
+            .map(|(mut ring, role)| {
+                let newell = |r: &[V3]| {
+                    let mut n = [0.0; 3];
+                    for i in 0..r.len() {
+                        let (a, b) = (r[i], r[(i + 1) % r.len()]);
+                        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+                        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+                        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+                    }
+                    unit3(n)
+                };
+                let mut n = newell(&ring);
+                let fc = mul3(ring.iter().fold([0.0; 3], |a, p| add3(a, *p)), 1.0 / ring.len() as f64);
+                if dot3(n, sub3(fc, c)) < 0.0 {
+                    ring.reverse();
+                    n = mul3(n, -1.0);
+                }
+                let d = ring.iter().map(|p| dot3(n, *p)).sum::<f64>() / ring.len() as f64;
+                PFace { ring, role, n, d }
+            })
+            .collect();
+        Poly3 { faces }
+    }
+    pub fn bbox(&self) -> Aabb {
+        let mut b = Aabb::EMPTY;
+        self.faces.iter().flat_map(|f| f.ring.iter()).for_each(|p| b.grow(*p));
+        b
+    }
+    /// Largest signed plane distance: exact inside, a lower bound of the distance outside.
+    pub fn sdf(&self, p: V3) -> f64 {
+        self.faces.iter().map(|f| dot3(f.n, p) - f.d).fold(f64::NEG_INFINITY, f64::max)
+    }
+    pub fn key(&self, h: &mut Hasher64) {
+        for f in &self.faces {
+            h.str(&f.role);
+            f.ring.iter().for_each(|p| {
+                h.f64(p[0]).f64(p[1]).f64(p[2]);
+            });
+        }
+    }
+}
+
 /// A curved solid with a closed analytic surface and no edges: a sphere or a torus (axis z). Exact volume, area, distance,
 /// projection and parametrisation (`u`: azimuth / major angle, `v`: polar / minor angle, both as fractions of a turn).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -190,6 +254,8 @@ pub enum Style {
 
 #[derive(Clone, Debug)]
 pub struct Prim {
+    /// a polyhedral solid (then `segs` is empty and the xy shape is only a placeholder)
+    pub poly: Option<Poly3>,
     /// a curved body (then `segs` is empty and the xy shape is only a placeholder)
     pub body: Option<Body>,
     /// z interval of the solid (a prism over this profile); `(0, 0)` for 2D models
@@ -410,7 +476,7 @@ impl Prim {
             .str(&name)
             .u64(aux as u64)
             .u64(feature as u64);
-        Ok(Prim { body: None, z, caps, feature, name, shape, xf, segs, bbox, aux, key: h.finish() })
+        Ok(Prim { poly: None, body: None, z, caps, feature, name, shape, xf, segs, bbox, aux, key: h.finish() })
     }
 
     pub fn new_body(feature: u32, name: String, body: Body) -> Prim {
@@ -419,6 +485,7 @@ impl Prim {
         body.key(&mut h);
         h.str(&name).u64(feature as u64);
         Prim {
+            poly: None,
             body: Some(body),
             z: (b.lo[2], b.hi[2]),
             caps: ["surface".to_string(), "surface".to_string()],
@@ -433,6 +500,27 @@ impl Prim {
         }
     }
 
+    pub fn new_poly(feature: u32, name: String, poly: Poly3, aux: bool) -> Prim {
+        let b = poly.bbox();
+        let mut h = Hasher64::new();
+        poly.key(&mut h);
+        h.str(&name).u64(feature as u64).u64(aux as u64);
+        Prim {
+            poly: Some(poly),
+            body: None,
+            z: (b.lo[2], b.hi[2]),
+            caps: ["bottom".to_string(), "top".to_string()],
+            feature,
+            name,
+            shape: LShape::Circle { c: [b.lo[0], b.lo[1]], r: 0.0 },
+            xf: Xf2::ID,
+            segs: vec![],
+            bbox: Aabb::new([b.lo[0], b.lo[1], 0.0], [b.hi[0], b.hi[1], 0.0]),
+            aux,
+            key: h.finish(),
+        }
+    }
+
     /// Bounding box including the z interval.
     pub fn bbox3(&self) -> Aabb {
         Aabb { lo: [self.bbox.lo[0], self.bbox.lo[1], self.z.0], hi: [self.bbox.hi[0], self.bbox.hi[1], self.z.1] }
@@ -442,6 +530,9 @@ impl Prim {
     pub fn sdf3(&self, p: V3, reach: f64) -> f64 {
         if let Some(b) = &self.body {
             return b.sdf(p);
+        }
+        if let Some(q) = &self.poly {
+            return q.sdf(p);
         }
         let dxy = self.sdf_near([p[0], p[1]], reach);
         if self.z.0 == self.z.1 {
@@ -462,7 +553,7 @@ impl Prim {
 
     /// Signed distance, skipping the evaluation when `p` is farther than `reach` from the bounding box.
     pub fn sdf_near(&self, p: V2, reach: f64) -> f64 {
-        if self.body.is_some() {
+        if self.body.is_some() || self.poly.is_some() {
             return f64::INFINITY; // curved bodies take no part in the planar arrangement
         }
         let b = &self.bbox;

@@ -160,6 +160,18 @@ impl Evaluated {
                         let (u, v) = b.fractions(q);
                         Fractions { u, v }
                     }
+                    crate::complex::FaceGeom::Planar { plane, cell } => {
+                        let pd = &cx.planar[plane as usize];
+                        let (b, d) = (pd.cx.regions[cell as usize].bbox, sub3(q, pd.o));
+                        let fr = |x: f64, k: usize| {
+                            if b.hi[k] > b.lo[k] {
+                                ((x - b.lo[k]) / (b.hi[k] - b.lo[k])).clamp(0.0, 1.0)
+                            } else {
+                                0.0
+                            }
+                        };
+                        Fractions { u: fr(dot3(d, pd.u), 0), v: fr(dot3(d, pd.v), 1) }
+                    }
                     crate::complex::FaceGeom::Cap { .. } => {
                         let b = f.bbox;
                         let frac = |x: f64, k: usize| {
@@ -198,6 +210,16 @@ impl Evaluated {
                         [q[0], q[1], z0 + f.u_clamp(fr.v) * (z1 - z0)]
                     }
                     crate::complex::FaceGeom::Quadric(b) => b.point_at(fr.u.clamp(0.0, 1.0), fr.v.clamp(0.0, 1.0)),
+                    crate::complex::FaceGeom::Planar { plane, cell } => {
+                        let b = cx.planar[plane as usize].cx.regions[cell as usize].bbox;
+                        cx.plane_lift(
+                            plane,
+                            [
+                                b.lo[0] + fr.u.clamp(0.0, 1.0) * (b.hi[0] - b.lo[0]),
+                                b.lo[1] + fr.v.clamp(0.0, 1.0) * (b.hi[1] - b.lo[1]),
+                            ],
+                        )
+                    }
                     crate::complex::FaceGeom::Cap { z, .. } => [
                         f.bbox.lo[0] + f.u_clamp(fr.u) * (f.bbox.hi[0] - f.bbox.lo[0]),
                         f.bbox.lo[1] + f.u_clamp(fr.v) * (f.bbox.hi[1] - f.bbox.lo[1]),
@@ -264,6 +286,7 @@ impl Evaluated {
                     crate::complex::FaceGeom::Lateral { edge, .. } => h.u64(1).u64(edge as u64),
                     crate::complex::FaceGeom::Cap { cell, .. } => h.u64(2).u64(cell as u64),
                     crate::complex::FaceGeom::Quadric(b) => h.u64(3).str(b.kind()),
+                    crate::complex::FaceGeom::Planar { plane, cell } => h.u64(4).u64(plane as u64).u64(cell as u64),
                 };
                 for p in &f.prov {
                     h.u64(p.feature as u64).str(&p.instance).str(&p.role);

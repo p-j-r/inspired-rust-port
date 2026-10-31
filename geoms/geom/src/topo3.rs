@@ -41,7 +41,7 @@ pub fn build(cx: &Complex) -> (Vec<Edge3>, Vec<Vertex>) {
             FaceGeom::Cap { cell, z } => {
                 cap.insert((cell, lev(z)), fi as u32);
             }
-            FaceGeom::Quadric(_) => {}
+            FaceGeom::Quadric(_) | FaceGeom::Planar { .. } => {}
         }
     }
     struct Raw {
@@ -125,6 +125,7 @@ pub fn build(cx: &Complex) -> (Vec<Edge3>, Vec<Vertex>) {
                 let p = ov.vertices[vertex as usize].p;
                 (z1 - z0, Aabb::new([p[0], p[1], z0], [p[0], p[1], z1]))
             }
+            EdgeGeom::Segment { .. } => unreachable!(),
             EdgeGeom::Horizontal { edge, z } => {
                 let e = &ov.edges[edge as usize];
                 let mut b = e.bbox;
@@ -158,9 +159,13 @@ pub fn build(cx: &Complex) -> (Vec<Edge3>, Vec<Vertex>) {
 impl Complex {
     /// Point of a 3D edge at fraction `u` of its parameter range.
     pub fn edge3_point(&self, e: u32, u: f64) -> V3 {
-        let ov = &self.stack.as_ref().expect("a layer stack").overlay;
         let u = u.clamp(0.0, 1.0);
+        if let EdgeGeom::Segment { a, b } = self.edges3[e as usize].geom {
+            return add3(a, mul3(sub3(b, a), u));
+        }
+        let ov = &self.stack.as_ref().expect("a layer stack").overlay;
         match self.edges3[e as usize].geom {
+            EdgeGeom::Segment { .. } => unreachable!(),
             EdgeGeom::Vertical { vertex, z0, z1 } => {
                 let p = ov.vertices[vertex as usize].p;
                 [p[0], p[1], z0 + u * (z1 - z0)]
@@ -175,8 +180,14 @@ impl Complex {
 
     /// Closest point of a 3D edge to `p`, with its fraction.
     pub fn edge3_closest(&self, e: u32, p: V3) -> (V3, f64) {
+        if let EdgeGeom::Segment { a, b } = self.edges3[e as usize].geom {
+            let d = sub3(b, a);
+            let u = (dot3(sub3(p, a), d) / dot3(d, d)).clamp(0.0, 1.0);
+            return (add3(a, mul3(d, u)), u);
+        }
         let ov = &self.stack.as_ref().expect("a layer stack").overlay;
         match self.edges3[e as usize].geom {
+            EdgeGeom::Segment { .. } => unreachable!(),
             EdgeGeom::Vertical { vertex, z0, z1 } => {
                 let q = ov.vertices[vertex as usize].p;
                 let z = p[2].clamp(z0, z1);
@@ -193,6 +204,33 @@ impl Complex {
     /// Topology checks of a 3D complex: every edge is shared by at least two distinct faces, and the edges around every face add up to
     /// its boundary (lateral: top and bottom plus the two verticals; cap: its cell's loops).
     pub(crate) fn check_topology3(&self) -> Result<(), String> {
+        let scale = self.regions.iter().map(|r| r.bbox.diagonal()).fold(0.0, f64::max).max(1e-300);
+        if self.stack.is_none() {
+            let mut sum = vec![0.0f64; self.faces.len()];
+            for e in &self.edges3 {
+                if e.faces.len() < 2 {
+                    return Err(format!("edge '{}' is used by a single face", e.name));
+                }
+                e.faces.iter().for_each(|&f| sum[f as usize] += e.length);
+            }
+            for (i, f) in self.faces.iter().enumerate() {
+                let FaceGeom::Planar { plane, cell } = f.geom else { continue };
+                let cx = &self.planar[plane as usize].cx;
+                let want: f64 = cx.regions[cell as usize]
+                    .loops
+                    .iter()
+                    .flat_map(|&l| cx.loops[l as usize].edges.iter())
+                    .map(|&(e, _)| cx.edges[e as usize].length)
+                    .sum();
+                if (sum[i] - want).abs() > 32.0 * self.tol + 1e-10 * scale {
+                    return Err(format!(
+                        "the edges around face '{}' have length {} but its boundary has {want}",
+                        f.name, sum[i]
+                    ));
+                }
+            }
+            return Ok(());
+        }
         let st = self.stack.as_ref().ok_or("no layer stack")?;
         let ov = &st.overlay;
         let scale = self.regions.iter().map(|r| r.bbox.diagonal()).fold(0.0, f64::max).max(1e-300);
@@ -211,7 +249,7 @@ impl Complex {
                     let e = &ov.edges[edge as usize];
                     2.0 * e.length + if e.v0 == e.v1 { 0.0 } else { 2.0 * (z1 - z0) }
                 }
-                FaceGeom::Quadric(_) => 0.0,
+                FaceGeom::Quadric(_) | FaceGeom::Planar { .. } => 0.0,
                 FaceGeom::Cap { cell, .. } => ov.regions[cell as usize]
                     .loops
                     .iter()
@@ -219,7 +257,7 @@ impl Complex {
                     .map(|&(e, _)| ov.edges[e as usize].length)
                     .sum(),
             };
-            if (sum[i] - want).abs() > 1e-9 * want.max(scale) {
+            if (sum[i] - want).abs() > 32.0 * self.tol + 1e-10 * scale {
                 return Err(format!(
                     "the edges around face '{}' have length {} but its boundary has {want}",
                     f.name, sum[i]

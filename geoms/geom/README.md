@@ -27,6 +27,12 @@ let si_box = lm.boundary("BOX|Si");                             // Vec<i32>
 let walls = ev.select_labels(&Selector::parse("outer")?)?;
 ```
 
+## 3D: three paths
+
+Prismatic models (boxes, z-cylinders, z-extrusions) use the layer stack below. Models with a rotation about x or y, a tapered extrusion or a
+slanted `Cut` use the polyhedral path (`planar.rs`): convex planar solids combined by Booleans, arranged plane by plane. Spheres and tori are
+edge-less bodies added to the prismatic stack. Curved surfaces that would have to be split along intersection curves are refused.
+
 ## 3D: layer stacks, edges and curved bodies
 
 A 3D model is evaluated as a stack of layers (cut at every z level where a solid starts or ends); each layer is a 2D arrangement, and the

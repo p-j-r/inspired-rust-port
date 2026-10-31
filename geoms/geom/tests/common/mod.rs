@@ -370,6 +370,29 @@ pub fn torus_in_box() -> Golden {
     Golden { name: "torus_in_box", model: m, expected: e }
 }
 
+/// Unit cube cut by the plane x + z = 1 (a triangular prism): the slanted-cut golden.
+pub fn slanted_cut_box() -> Golden {
+    let mut m = Model::new_3d();
+    let b = m.box_("block", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    m.overlay(&[("block", b)]);
+    m.cut("slant", (1.0, 0.0, 1.0), 1.0, Keep::Below);
+    let mut e = exp("box with a slanted plane cut: 5 faces, 9 edges, 6 vertices", &[("block", 0.5)], &[]);
+    e.names = vec![];
+    Golden { name: "slanted_cut_box", model: m, expected: e }
+}
+
+/// A 2 x 2 square tapered by 10 degrees over height 1 (frustum).
+pub fn tapered_frustum() -> Golden {
+    let mut m = Model::new_3d();
+    let p = m.rect("outline", (0.0, 0.0), (2.0, 2.0));
+    let e = m.extrude_tapered("frustum", p, 0.0, 1.0, 10.0);
+    m.overlay(&[("frustum", e)]);
+    let top = 2.0 - 2.0 * 10f64.to_radians().tan();
+    let mut ex = exp("tapered extrusion", &[("frustum", (4.0 + top * top + 2.0 * top) / 3.0)], &[]);
+    ex.names = vec![];
+    Golden { name: "tapered_frustum", model: m, expected: ex }
+}
+
 pub fn all_3d() -> Vec<Golden> {
     vec![
         bragg3("bragg_symmetric", true, true),
@@ -380,6 +403,8 @@ pub fn all_3d() -> Vec<Golden> {
         sphere_in_box(),
         concentric_spheres(),
         torus_in_box(),
+        slanted_cut_box(),
+        tapered_frustum(),
     ]
 }
 

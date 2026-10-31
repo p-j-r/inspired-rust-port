@@ -514,7 +514,10 @@ impl Builder<'_> {
                 self.memo.insert(key, self.prims.len() - 1);
                 Ok(Node::Prim(self.prims.len() - 1))
             }
-            Op::Extrude { profile, z0, z1 } => {
+            Op::Extrude { profile, z0, z1, taper_deg } => {
+                if taper_deg.is_some() {
+                    return Err(GeomError(format!("Extrude '{}' is tapered: tapered solids are polyhedral and are handled by the planar path (internal dispatch error)", f.name)));
+                }
                 solid_only(self)?;
                 let (a, b) = (self.ev(z0, f, "z0")?, self.ev(z1, f, "z1")?);
                 pos("height", (b - a).abs())?;

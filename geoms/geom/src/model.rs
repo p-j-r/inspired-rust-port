@@ -195,6 +195,9 @@ pub enum Op {
         profile: FeatureId,
         z0: Expr,
         z1: Expr,
+        /// wall angle from the vertical in degrees (positive narrows towards z1); makes the solid polyhedral
+        #[serde(default)]
+        taper_deg: Option<Expr>,
     },
     Transform {
         input: FeatureId,
@@ -292,7 +295,9 @@ impl Op {
             Op::Sphere { center, r } => center.iter().chain([r]).collect(),
             Op::Torus { center, major, minor } => center.iter().chain([major, minor]).collect(),
             Op::Cylinder { base, r, h, .. } => base.iter().chain([r, h]).collect(),
-            Op::Extrude { z0, z1, .. } => vec![z0, z1],
+            Op::Extrude { z0, z1, taper_deg, .. } => {
+                [Some(z0), Some(z1), taper_deg.as_ref()].into_iter().flatten().collect()
+            }
             Op::Ellipse { center, radii, angle_deg } => center.iter().chain(radii).chain([angle_deg]).collect(),
             Op::Polygon { pts, .. } => pts.iter().flatten().collect(),
             Op::Transform { steps, .. } => steps
@@ -563,6 +568,16 @@ impl Model {
     ) -> FeatureId {
         self.push(name, Op::Cylinder { base: e3(base), axis: Axis::Z, r: r.into(), h: h.into() })
     }
+    pub fn extrude_tapered(
+        &mut self,
+        name: &str,
+        profile: FeatureId,
+        z0: impl Into<Expr>,
+        z1: impl Into<Expr>,
+        taper_deg: impl Into<Expr>,
+    ) -> FeatureId {
+        self.push(name, Op::Extrude { profile, z0: z0.into(), z1: z1.into(), taper_deg: Some(taper_deg.into()) })
+    }
     pub fn sphere(
         &mut self,
         name: &str,
@@ -581,7 +596,7 @@ impl Model {
         self.push(name, Op::Torus { center: e3(center), major: major.into(), minor: minor.into() })
     }
     pub fn extrude(&mut self, name: &str, profile: FeatureId, z0: impl Into<Expr>, z1: impl Into<Expr>) -> FeatureId {
-        self.push(name, Op::Extrude { profile, z0: z0.into(), z1: z1.into() })
+        self.push(name, Op::Extrude { profile, z0: z0.into(), z1: z1.into(), taper_deg: None })
     }
     pub fn circle(&mut self, name: &str, center: (impl Into<Expr>, impl Into<Expr>), r: impl Into<Expr>) -> FeatureId {
         self.push(name, Op::Circle { center: e2(center), r: r.into() })

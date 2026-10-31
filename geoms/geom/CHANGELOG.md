@@ -1,5 +1,26 @@
 # Changelog
 
+## Polyhedral path (rotations, tapers, slanted cuts)
+
+* **General planar-faced solids** (`planar.rs`): boxes in any orientation, `Rect`/`Polygon` extrusions (concave profiles are triangulated into
+  convex prisms whose internal faces vanish in the arrangement), tapered extrusions of convex profiles (`Extrude.taper_deg`, new field with a
+  serde default), rotations about any axis (`Transform`, `Pattern` polar), mirrors, scale, patterns, and `Cut` with any normal. Selected
+  automatically when a model uses a rotation about x or y, a taper or a slanted cut.
+* **Arrangement**: plane by plane. Every plane that carries a face is arranged in 2D (reusing the 2D arrangement) from the cross-section of each
+  solid, with the composite class (region above, region below); cells whose two sides differ are the faces. Edges are the cell boundaries merged
+  by 3D line (so T-junctions between planes are resolved) and vertices their end points; region volumes follow from the divergence theorem.
+  Faces on one plane with the same pair of regions are one face (possibly several components). The closure, volume and edge-incidence checks
+  hold on 2000 random rotated / cut models (`tests/props.rs`).
+* Goldens added: box with a slanted cut (5 faces, 9 edges, 6 vertices), tapered frustum. `tests/planar.rs`: volumes against closed forms, Euler
+  numbers, rotated cubes inside and across other solids, concave beam, pattern of tilted bars, refusals.
+* Not in this path: curved solids (cylinder, sphere, torus) together with rotated / tapered / slanted geometry, `Pml` (refused with a message).
+
+### Still missing (needs curved-surface intersection curves)
+
+Cone and frustum solids, `Revolve`, a sphere / torus / cylinder cut by a plane or by another curved solid, skew or tilted cylinders, cylinders
+along x or y, curved solids mixed with rotated polyhedra. These need the face-splitting of curved surfaces along `SurfSurf` curves in the surface
+parametrisation; they are refused with a message that names the features, not approximated.
+
 ## Edges, vertices, curved bodies, refusal catalogue
 
 * **3D edges and vertices** (`topo3.rs`): a fragment-level B-rep derived from the layer stack. Vertical edges run along overlay vertices

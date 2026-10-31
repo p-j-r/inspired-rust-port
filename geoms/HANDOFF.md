@@ -21,7 +21,7 @@ GEOM_WRITE_GOLDEN=1 cargo test --test goldens write_goldens   # regenerate golde
 |---|---|
 | A (2D kernel, names, selectors, LabelMap, serde, builder, goldens) | done; 2D goldens match closed forms to 1e-10 |
 | B (params, tiers, cache, normalisation, to_rust, tessellation, oracle, deviation and curvature queries, addendum 1) | done |
-| C (3D) | prismatic models (Box, z-Cylinder, Extrude, z-rotations, Cut along axes, Pml, Periodic, Size), 3D edges and vertices, and `Sphere` / `Torus` bodies clear of everything else; **no** intersection curves between curved surfaces (cone, revolve, tapered, slanted or skew geometry, a sphere crossing a wall) |
+| C (3D) | polyhedral solids at any orientation (`planar.rs`: rotations, tapers, slanted cuts, Booleans), prismatic models (Box, z-Cylinder, Extrude, z-rotations, Cut along axes, Pml, Periodic, Size), 3D edges and vertices, and `Sphere` / `Torus` bodies clear of everything else; **no** intersection curves between curved surfaces (cone, revolve, a sphere crossing a wall, skew or tilted cylinders) |
 | D (layer stack, `surfaces_for_stuffing`, bench) | done for what C produces |
 
 ## What to check first when integrating

@@ -169,11 +169,11 @@ fn extruded_profiles_pml_and_cuts_in_3d() {
     assert!(close(ev.volume(0), 0.5 * 1.0 * 0.75));
     assert!(ev.faces().iter().any(|f| f.name == "sym.cut") && ev.faces().iter().any(|f| f.name == "floor.cut"));
     assert_eq!(ev.resolve(&Selector::Tag("symmetry".into())).unwrap().set.ids.len(), 2);
-    // slanted cut: refused with an explanation
+    // a slanted cut of a curved prism: refused with an explanation (a slanted cut of a polyhedron works, see tests/planar.rs)
     let mut m = Model::new_3d();
-    let a = m.box_("a", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    let a = m.cylinder("pin", (0.0, 0.0, 0.0), 0.5, 1.0);
     m.overlay(&[("a", a)]);
-    m.cut("slant", (1.0, 0.0, 1.0), 1.0, Keep::Below);
+    m.cut("slant", (1.0, 0.0, 1.0), 0.5, Keep::Below);
     assert!(m.eval(Tier::Complex).err().unwrap().0.contains("slanted"));
     // PML on all sides of a window around a box: pieces appear for the regions that reach the pad
     let mut m = Model::new_3d();
