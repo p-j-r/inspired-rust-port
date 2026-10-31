@@ -8,7 +8,7 @@ For the integration session. Read [`geom/README.md`](geom/README.md) (convention
 
 ```bash
 cd geoms/geom
-cargo test --release                 # about 70 tests, a few seconds
+cargo test --release                 # about 40 tests (the property tests run 200-300 random cases each), a few seconds
 cargo test --release --features parallel
 cargo clippy --release --all-targets -- -D warnings
 cargo run --release --example geom_bench
