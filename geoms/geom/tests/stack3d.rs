@@ -310,3 +310,108 @@ fn three_d_edges_and_vertices_form_a_closed_topology() {
     // vertices know their edges and are named after the faces around them
     assert!(ev.vertices().iter().all(|v| !v.edges.is_empty() && !v.name.is_empty()));
 }
+
+#[test]
+fn curved_bodies_inside_a_host_are_exact_and_conflicts_are_refused() {
+    let v_sphere = |r: f64| 4.0 / 3.0 * PI * r.powi(3);
+    // sphere in a box: two regions, one extra face, no edges on it
+    let mut m = Model::new_3d();
+    let air = m.box_("air", (0.0, 0.0, 0.0), (4.0, 4.0, 4.0));
+    let ball = m.sphere("ball", (2.0, 2.0, 2.0), 0.7);
+    m.overlay(&[("air", air), ("ball", ball)]);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert!(close(ev.volume(0), 64.0 - v_sphere(0.7)) && close(ev.volume(1), v_sphere(0.7)));
+    assert_eq!(ev.faces().len(), 7);
+    assert_eq!(ev.edges3().len(), 12);
+    let f = ev.resolve(&Selector::parse("name(air|ball)").unwrap()).unwrap().set;
+    assert_eq!(f.ids.len(), 1);
+    assert_eq!(ev.resolve(&Selector::parse("kind(sphere)").unwrap()).unwrap().set, f);
+    assert_eq!(ev.resolve(&Selector::parse("radius(0.7)").unwrap()).unwrap().set, f);
+    assert_eq!(ev.classify([2.0, 2.0, 2.0]), Some(1));
+    assert_eq!(ev.classify([0.5, 0.5, 0.5]), Some(0));
+    assert!(close(ev.faces()[f.ids[0] as usize].area, 4.0 * PI * 0.49));
+    let q = ev.oracle().project([4.0, 2.0, 2.0], EntityRef::Face(f.ids[0])).unwrap();
+    assert!((q[0] - 2.7).abs() < 1e-14 && (q[1] - 2.0).abs() < 1e-14);
+    let l = ev.bounds().diagonal();
+    for (u, v) in [(0.1, 0.2), (0.9, 0.8), (0.5, 0.5)] {
+        let p = ev.position_at(EntityRef::Face(f.ids[0]), geom::query::Fractions { u, v }).unwrap();
+        let g = ev.fractions_of(EntityRef::Face(f.ids[0]), p).unwrap();
+        let p2 = ev.position_at(EntityRef::Face(f.ids[0]), g).unwrap();
+        assert!(norm(p, p2) <= 1e-12 * l);
+    }
+    let mesh = ev.tessellate(1e-3);
+    let area: f64 = mesh
+        .tris
+        .iter()
+        .zip(&mesh.tri_face)
+        .filter(|(_, &fc)| fc == f.ids[0])
+        .map(|(t, _)| tri_area(&mesh.points, t))
+        .sum();
+    assert!((area / (4.0 * PI * 0.49) - 1.0).abs() < 1e-2);
+    // concentric spheres (nested) and a torus
+    let mut m = Model::new_3d();
+    let host = m.box_("host", (-3.0, -3.0, -3.0), (3.0, 3.0, 3.0));
+    let outer = m.sphere("outer", (0.0, 0.0, 0.0), 2.0);
+    let inner = m.sphere("inner", (0.0, 0.0, 0.0), 1.0);
+    let tor = m.torus("ring", (0.0, 0.0, 2.6), 0.2, 0.1);
+    m.overlay(&[("vacuum", host), ("shell", outer), ("core", inner), ("ring", tor)]);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    let vol = |n: &str| ev.volume(ev.regions().iter().position(|r| r.name == n).unwrap() as u32);
+    assert!(close(vol("core"), v_sphere(1.0)) && close(vol("shell"), v_sphere(2.0) - v_sphere(1.0)));
+    assert!(close(vol("ring"), 2.0 * PI * PI * 0.2 * 0.01));
+    assert!(close(vol("vacuum"), 216.0 - v_sphere(2.0) - 2.0 * PI * PI * 0.2 * 0.01));
+    let names: Vec<&str> = ev.faces().iter().map(|f| f.name.as_str()).collect();
+    assert!(names.contains(&"core|shell") && names.contains(&"shell|vacuum") && names.contains(&"ring|vacuum"));
+    // refusals name both features
+    let refuse = |build: &dyn Fn(&mut Model) -> Vec<(&'static str, FeatureId)>| {
+        let mut m = Model::new_3d();
+        let regs = build(&mut m);
+        m.overlay(&regs);
+        m.eval(Tier::Complex).err().expect("expected a refusal").0
+    };
+    let e = refuse(&|m| {
+        let b = m.box_("box", (0.0, 0.0, 0.0), (2.0, 2.0, 2.0));
+        let s = m.sphere("ball", (1.0, 1.0, 1.9), 0.5); // pokes through the top
+        vec![("a", b), ("b", s)]
+    });
+    assert!(e.contains("sphere 'ball'") && e.contains("box.zmax"), "{e}");
+    let e = refuse(&|m| {
+        let b = m.box_("box", (0.0, 0.0, 0.0), (6.0, 6.0, 6.0));
+        let s1 = m.sphere("s1", (2.0, 3.0, 3.0), 1.0);
+        let s2 = m.sphere("s2", (3.0, 3.0, 3.0), 1.0); // overlapping spheres
+        vec![("a", b), ("b", s1), ("c", s2)]
+    });
+    assert!(e.contains("'s1'") && e.contains("'s2'") && e.contains("intersect"), "{e}");
+    let e = refuse(&|m| {
+        let s = m.sphere("alone", (0.0, 0.0, 0.0), 1.0);
+        vec![("a", s)]
+    });
+    assert!(e.contains("prismatic host"), "{e}");
+    // printing and the parameter model keep working
+    let mut m = Model::new_3d();
+    let host = m.box_("host", (0.0, 0.0, 0.0), (4.0, 4.0, 4.0));
+    m.param("r", 0.5);
+    let s = m.sphere("ball", (2.0, 2.0, 2.0), "r");
+    m.overlay(&[("host", host), ("ball", s)]);
+    assert_eq!(common::interp::build(&m.list.to_rust()).list, m.list);
+    let mut e = Evaluator::new();
+    let a = e.eval(&m.list, Tier::Complex).unwrap();
+    let b = e.eval(&m.list.with(&[("r", 0.9)]), Tier::Complex).unwrap();
+    assert_eq!(a.topology_signature(), b.topology_signature());
+    assert_eq!(diff(&a, &b).kind, ChangeKind::Morph);
+}
+
+mod common;
+
+fn norm(a: [f64; 3], b: [f64; 3]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+fn tri_area(p: &[[f64; 3]], t: &[u32; 3]) -> f64 {
+    let (a, b, c) = (p[t[0] as usize], p[t[1] as usize], p[t[2] as usize]);
+    let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+    let cr = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    0.5 * (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt()
+}

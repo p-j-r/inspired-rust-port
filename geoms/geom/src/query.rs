@@ -156,6 +156,10 @@ impl Evaluated {
                             v: ((q[2] - z0) / (z1 - z0)).clamp(0.0, 1.0),
                         }
                     }
+                    crate::complex::FaceGeom::Quadric(b) => {
+                        let (u, v) = b.fractions(q);
+                        Fractions { u, v }
+                    }
                     crate::complex::FaceGeom::Cap { .. } => {
                         let b = f.bbox;
                         let frac = |x: f64, k: usize| {
@@ -193,6 +197,7 @@ impl Evaluated {
                         let q = cx.stack.as_ref()?.overlay.edge_point(edge, ed.t0 + f.u_clamp(fr.u) * (ed.t1 - ed.t0));
                         [q[0], q[1], z0 + f.u_clamp(fr.v) * (z1 - z0)]
                     }
+                    crate::complex::FaceGeom::Quadric(b) => b.point_at(fr.u.clamp(0.0, 1.0), fr.v.clamp(0.0, 1.0)),
                     crate::complex::FaceGeom::Cap { z, .. } => [
                         f.bbox.lo[0] + f.u_clamp(fr.u) * (f.bbox.hi[0] - f.bbox.lo[0]),
                         f.bbox.lo[1] + f.u_clamp(fr.v) * (f.bbox.hi[1] - f.bbox.lo[1]),
@@ -258,6 +263,7 @@ impl Evaluated {
                 match f.geom {
                     crate::complex::FaceGeom::Lateral { edge, .. } => h.u64(1).u64(edge as u64),
                     crate::complex::FaceGeom::Cap { cell, .. } => h.u64(2).u64(cell as u64),
+                    crate::complex::FaceGeom::Quadric(b) => h.u64(3).str(b.kind()),
                 };
                 for p in &f.prov {
                     h.u64(p.feature as u64).str(&p.instance).str(&p.role);
@@ -296,6 +302,10 @@ impl Evaluated {
         for e in &ov.edges {
             ov.curves[e.curve as usize].hash_into(&mut h);
             h.f64(e.t0).f64(e.t1);
+        }
+        // curved bodies are not part of the overlay: any change to one is more than a z change
+        for p in self.scene.as_ref()?.prims.iter().filter(|p| p.body.is_some()) {
+            h.u64(p.key);
         }
         Some(h.finish())
     }

@@ -46,6 +46,139 @@ pub struct DSeg {
     pub role: String,
 }
 
+/// A curved solid with a closed analytic surface and no edges: a sphere or a torus (axis z). Exact volume, area, distance,
+/// projection and parametrisation (`u`: azimuth / major angle, `v`: polar / minor angle, both as fractions of a turn).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Body {
+    Sphere { c: V3, r: f64 },
+    Torus { c: V3, big: f64, small: f64 },
+}
+
+impl Body {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Body::Sphere { .. } => "sphere",
+            Body::Torus { .. } => "torus",
+        }
+    }
+    pub fn volume(&self) -> f64 {
+        match self {
+            Body::Sphere { r, .. } => 4.0 / 3.0 * std::f64::consts::PI * r.powi(3),
+            Body::Torus { big, small, .. } => 2.0 * std::f64::consts::PI.powi(2) * big * small * small,
+        }
+    }
+    pub fn area(&self) -> f64 {
+        match self {
+            Body::Sphere { r, .. } => 4.0 * std::f64::consts::PI * r * r,
+            Body::Torus { big, small, .. } => 4.0 * std::f64::consts::PI.powi(2) * big * small,
+        }
+    }
+    pub fn bbox(&self) -> Aabb {
+        match self {
+            Body::Sphere { c, r } => Aabb::new(sub3(*c, [*r; 3]), add3(*c, [*r; 3])),
+            Body::Torus { c, big, small } => {
+                let e = big + small;
+                Aabb::new([c[0] - e, c[1] - e, c[2] - small], [c[0] + e, c[1] + e, c[2] + small])
+            }
+        }
+    }
+    /// Signed distance (negative inside).
+    pub fn sdf(&self, p: V3) -> f64 {
+        match self {
+            Body::Sphere { c, r } => norm3(sub3(p, *c)) - r,
+            Body::Torus { c, big, small } => {
+                let d = sub3(p, *c);
+                (((d[0].hypot(d[1]) - big).powi(2) + d[2] * d[2]).sqrt()) - small
+            }
+        }
+    }
+    /// Closest point of the surface.
+    pub fn project(&self, p: V3) -> V3 {
+        match self {
+            Body::Sphere { c, r } => {
+                let d = sub3(p, *c);
+                let n = norm3(d);
+                if n == 0.0 {
+                    add3(*c, [*r, 0.0, 0.0])
+                } else {
+                    add3(*c, mul3(d, r / n))
+                }
+            }
+            Body::Torus { c, big, small } => {
+                let d = sub3(p, *c);
+                let rho = d[0].hypot(d[1]);
+                let (ux, uy) = if rho == 0.0 { (1.0, 0.0) } else { (d[0] / rho, d[1] / rho) };
+                let ring = [c[0] + big * ux, c[1] + big * uy, c[2]];
+                let e = sub3(p, ring);
+                let n = norm3(e);
+                if n == 0.0 {
+                    add3(ring, [small * ux, small * uy, 0.0])
+                } else {
+                    add3(ring, mul3(e, small / n))
+                }
+            }
+        }
+    }
+    /// Outward unit normal at the surface point nearest `p`.
+    pub fn normal(&self, p: V3) -> V3 {
+        match self {
+            Body::Sphere { c, .. } => unit3(sub3(self.project(p), *c)),
+            Body::Torus { c, big, .. } => {
+                let q = self.project(p);
+                let d = sub3(q, *c);
+                let rho = d[0].hypot(d[1]).max(1e-300);
+                unit3(sub3(q, [c[0] + big * d[0] / rho, c[1] + big * d[1] / rho, c[2]]))
+            }
+        }
+    }
+    /// Point at the fractions `(u, v)` of a turn.
+    pub fn point_at(&self, u: f64, v: f64) -> V3 {
+        let (a, b) = (u * TAU, v * TAU);
+        match self {
+            Body::Sphere { c, r } => {
+                // v runs from the south pole (0) to the north pole (1)
+                let th = v * std::f64::consts::PI;
+                [c[0] + r * th.sin() * a.cos(), c[1] + r * th.sin() * a.sin(), c[2] - r * th.cos()]
+            }
+            Body::Torus { c, big, small } => {
+                let rho = big + small * b.cos();
+                [c[0] + rho * a.cos(), c[1] + rho * a.sin(), c[2] + small * b.sin()]
+            }
+        }
+    }
+    /// Fractions of the surface point nearest `p`.
+    pub fn fractions(&self, p: V3) -> (f64, f64) {
+        let q = self.project(p);
+        match self {
+            Body::Sphere { c, r } => {
+                let d = sub3(q, *c);
+                ((d[1].atan2(d[0]) / TAU).rem_euclid(1.0), ((-d[2] / r).clamp(-1.0, 1.0).acos()) / std::f64::consts::PI)
+            }
+            Body::Torus { c, big, .. } => {
+                let d = sub3(q, *c);
+                let rho = d[0].hypot(d[1]);
+                ((d[1].atan2(d[0]) / TAU).rem_euclid(1.0), (d[2].atan2(rho - big) / TAU).rem_euclid(1.0))
+            }
+        }
+    }
+    pub fn radius_of_curvature(&self) -> f64 {
+        match self {
+            Body::Sphere { r, .. } => *r,
+            Body::Torus { small, .. } => *small,
+        }
+    }
+    pub fn key(&self, h: &mut Hasher64) {
+        match self {
+            Body::Sphere { c, r } => {
+                h.u64(7).f64(c[0]).f64(c[1]).f64(c[2]).f64(*r);
+            }
+            Body::Torus { c, big, small } => {
+                h.u64(8).f64(c[0]).f64(c[1]).f64(c[2]).f64(*big).f64(*small);
+            }
+        }
+    }
+}
+
 /// How the boundary pieces are named in 3D: a rectangle read as a box, a circle read as a cylinder, any profile extruded, or plain 2D.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Style {
@@ -57,6 +190,8 @@ pub enum Style {
 
 #[derive(Clone, Debug)]
 pub struct Prim {
+    /// a curved body (then `segs` is empty and the xy shape is only a placeholder)
+    pub body: Option<Body>,
     /// z interval of the solid (a prism over this profile); `(0, 0)` for 2D models
     pub z: (f64, f64),
     /// roles of the bottom and top faces
@@ -275,7 +410,27 @@ impl Prim {
             .str(&name)
             .u64(aux as u64)
             .u64(feature as u64);
-        Ok(Prim { z, caps, feature, name, shape, xf, segs, bbox, aux, key: h.finish() })
+        Ok(Prim { body: None, z, caps, feature, name, shape, xf, segs, bbox, aux, key: h.finish() })
+    }
+
+    pub fn new_body(feature: u32, name: String, body: Body) -> Prim {
+        let b = body.bbox();
+        let mut h = Hasher64::new();
+        body.key(&mut h);
+        h.str(&name).u64(feature as u64);
+        Prim {
+            body: Some(body),
+            z: (b.lo[2], b.hi[2]),
+            caps: ["surface".to_string(), "surface".to_string()],
+            feature,
+            name,
+            shape: LShape::Circle { c: [b.lo[0], b.lo[1]], r: 0.0 },
+            xf: Xf2::ID,
+            segs: vec![],
+            bbox: Aabb::new([b.lo[0], b.lo[1], 0.0], [b.hi[0], b.hi[1], 0.0]),
+            aux: false,
+            key: h.finish(),
+        }
     }
 
     /// Bounding box including the z interval.
@@ -285,6 +440,9 @@ impl Prim {
 
     /// Signed distance estimate of the prism in 3D (negative inside).
     pub fn sdf3(&self, p: V3, reach: f64) -> f64 {
+        if let Some(b) = &self.body {
+            return b.sdf(p);
+        }
         let dxy = self.sdf_near([p[0], p[1]], reach);
         if self.z.0 == self.z.1 {
             return dxy;
@@ -304,6 +462,9 @@ impl Prim {
 
     /// Signed distance, skipping the evaluation when `p` is farther than `reach` from the bounding box.
     pub fn sdf_near(&self, p: V2, reach: f64) -> f64 {
+        if self.body.is_some() {
+            return f64::INFINITY; // curved bodies take no part in the planar arrangement
+        }
         let b = &self.bbox;
         let d = (b.lo[0] - p[0]).max(p[0] - b.hi[0]).max(b.lo[1] - p[1]).max(p[1] - b.hi[1]);
         if d > reach {

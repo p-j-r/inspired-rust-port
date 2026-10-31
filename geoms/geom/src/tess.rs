@@ -219,6 +219,32 @@ impl Evaluated {
                         m.seg_edge.extend([fi, fi]);
                     }
                 }
+                FaceGeom::Quadric(b) => {
+                    let n = ((std::f64::consts::TAU
+                        / (2.0 * (1.0 - max_dev / b.radius_of_curvature()).clamp(-1.0, 1.0).acos().max(1e-3)))
+                    .ceil() as usize)
+                        .clamp(12, 256);
+                    let base = m.points.len() as u32;
+                    for iu in 0..n {
+                        for iv in 0..=n {
+                            m.points.push(b.point_at(iu as f64 / n as f64, iv as f64 / n as f64));
+                        }
+                    }
+                    let w = n as u32 + 1;
+                    for iu in 0..n as u32 {
+                        for iv in 0..n as u32 {
+                            let (a, bb, c, d) = (
+                                base + iu * w + iv,
+                                base + iu * w + iv + 1,
+                                base + ((iu + 1) % n as u32) * w + iv,
+                                base + ((iu + 1) % n as u32) * w + iv + 1,
+                            );
+                            m.tris.push([a, c, bb]);
+                            m.tris.push([bb, c, d]);
+                            m.tri_face.extend([fi, fi]);
+                        }
+                    }
+                }
                 FaceGeom::Cap { cell, z } => {
                     let base = m.points.len() as u32;
                     m.points.extend(flat.points.iter().map(|p| [p[0], p[1], z]));

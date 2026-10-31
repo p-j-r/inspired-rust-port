@@ -1,5 +1,21 @@
 # Changelog
 
+## Edges, vertices, curved bodies, refusal catalogue
+
+* **3D edges and vertices** (`topo3.rs`): a fragment-level B-rep derived from the layer stack. Vertical edges run along overlay vertices
+  through runs of layers where at least two distinct faces meet; horizontal edges are overlay edges at a level where at least two faces
+  meet (lateral faces below and above, caps on both sides); vertices are overlay vertices at levels. Edges are shared by two faces, three or
+  more at a junction of regions. Names: sorted face names joined by `/`. A new check verifies that every edge is shared by at least two
+  faces and that the edges around every face add up to its boundary (box: V - E + F = 2). Selectors (`name(a/b)`), oracle, fractions, signature use them.
+* **Curved bodies**: `Sphere` and `Torus` (axis z), each one closed face `surface` without edges, exact volume, area, distance, projection and
+  parametrisation. They sit inside a prismatic host and must be clear of every other face (exact distance for spheres, bounding box for tori)
+  and of each other (disjoint, or one sphere strictly inside another). Anything that touches or crosses is refused with both names.
+  Goldens: sphere in a box, concentric spheres, torus in a box.
+* `tests/refusals.rs`: one test per refusal class (undecidable 2D geometry, invalid input, unsupported 3D content, touching curved bodies,
+  labels / selectors / periodic pairs); every message must name the features involved.
+* Still not implemented: intersection curves between curved surfaces and planes or each other (`SurfSurf`), cones, revolves, tapered sweeps,
+  rotations about x or y, cylinders along x or y, slanted cuts. These are refused, not approximated.
+
 ## Naming schemes
 
 * `NameScheme::{Feature, Region, Numbered}` on the `Overlay` (serde default `Feature`, so existing files are unchanged), `Model::set_naming`, printed by `to_rust`. Works for 2D edges and 3D faces.

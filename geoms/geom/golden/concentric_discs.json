@@ -75,7 +75,8 @@
               "pinned_id": null
             }
           ],
-          "pins": []
+          "pins": [],
+          "naming": "Feature"
         }
       },
       "suppressed": false,

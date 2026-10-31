@@ -331,6 +331,45 @@ pub fn concentric_cylinders() -> Golden {
     Golden { name: "concentric_cylinders", model: m, expected: e }
 }
 
+/// Sphere in a box (two regions, volumes 4/3 pi r^3), concentric spheres, and a torus (2 pi^2 R r^2).
+pub fn sphere_in_box() -> Golden {
+    let mut m = Model::new_3d();
+    let air = m.box_("air", (0.0, 0.0, 0.0), (4.0, 4.0, 4.0));
+    let ball = m.sphere("ball", (2.0, 2.0, 2.0), 0.7);
+    m.overlay(&[("air", air), ("ball", ball)]);
+    let v = 4.0 / 3.0 * PI * 0.343;
+    let mut e = exp("sphere in a box", &[("air", 64.0 - v), ("ball", v)], &[]);
+    e.names = vec![];
+    Golden { name: "sphere_in_box", model: m, expected: e }
+}
+
+pub fn concentric_spheres() -> Golden {
+    let mut m = Model::new_3d();
+    let host = m.box_("host", (-3.0, -3.0, -3.0), (3.0, 3.0, 3.0));
+    let outer = m.sphere("outer", (0.0, 0.0, 0.0), 2.0);
+    let inner = m.sphere("inner", (0.0, 0.0, 0.0), 1.0);
+    m.overlay(&[("vacuum", host), ("dielectric", outer), ("core", inner)]);
+    let sv = |r: f64| 4.0 / 3.0 * PI * r * r * r;
+    let mut e = exp(
+        "concentric spheres in a box",
+        &[("vacuum", 216.0 - sv(2.0)), ("dielectric", sv(2.0) - sv(1.0)), ("core", sv(1.0))],
+        &[],
+    );
+    e.names = vec![];
+    Golden { name: "concentric_spheres", model: m, expected: e }
+}
+
+pub fn torus_in_box() -> Golden {
+    let mut m = Model::new_3d();
+    let host = m.box_("host", (-2.0, -2.0, -1.0), (2.0, 2.0, 1.0));
+    let ring = m.torus("ring", (0.0, 0.0, 0.0), 1.0, 0.25);
+    m.overlay(&[("vacuum", host), ("ring", ring)]);
+    let v = 2.0 * PI * PI * 1.0 * 0.0625;
+    let mut e = exp("torus in a box", &[("vacuum", 32.0 - v), ("ring", v)], &[]);
+    e.names = vec![];
+    Golden { name: "torus_in_box", model: m, expected: e }
+}
+
 pub fn all_3d() -> Vec<Golden> {
     vec![
         bragg3("bragg_symmetric", true, true),
@@ -338,6 +377,9 @@ pub fn all_3d() -> Vec<Golden> {
         bragg3("bragg_uniform", false, false),
         cylinder_cavity(),
         concentric_cylinders(),
+        sphere_in_box(),
+        concentric_spheres(),
+        torus_in_box(),
     ]
 }
 

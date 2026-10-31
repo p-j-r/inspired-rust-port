@@ -486,6 +486,34 @@ impl Builder<'_> {
                     (c[2].min(c[2] + h), c[2].max(c[2] + h)),
                 )
             }
+            Op::Sphere { center, r } | Op::Torus { center, major: r, .. } => {
+                solid_only(self)?;
+                let c = self.ev3(center, f, "centre")?;
+                let k = xf.xy.scale();
+                let c = [xf.xy.apply([c[0], c[1]])[0], xf.xy.apply([c[0], c[1]])[1], xf.zs * c[2] + xf.zt];
+                let a = self.ev(r, f, if matches!(f.op, Op::Sphere { .. }) { "radius" } else { "major radius" })?;
+                pos("radius", a)?;
+                let body = if let Op::Torus { minor, .. } = &f.op {
+                    let m = self.ev(minor, f, "minor radius")?;
+                    pos("minor radius", m)?;
+                    if m >= a {
+                        return Err(GeomError(format!(
+                            "Torus '{}' has minor radius {m} not smaller than its major radius {a}",
+                            f.name
+                        )));
+                    }
+                    Body::Torus { c, big: a * k, small: m * k }
+                } else {
+                    Body::Sphere { c, r: a * k }
+                };
+                let key = (f.id, xf.key(), suffix.to_string());
+                if let Some(&i) = self.memo.get(&key) {
+                    return Ok(Node::Prim(i));
+                }
+                self.prims.push(Arc::new(Prim::new_body(f.id, format!("{}{}", f.name, suffix), body)));
+                self.memo.insert(key, self.prims.len() - 1);
+                Ok(Node::Prim(self.prims.len() - 1))
+            }
             Op::Extrude { profile, z0, z1 } => {
                 solid_only(self)?;
                 let (a, b) = (self.ev(z0, f, "z0")?, self.ev(z1, f, "z1")?);

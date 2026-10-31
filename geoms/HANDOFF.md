@@ -21,7 +21,7 @@ GEOM_WRITE_GOLDEN=1 cargo test --test goldens write_goldens   # regenerate golde
 |---|---|
 | A (2D kernel, names, selectors, LabelMap, serde, builder, goldens) | done; 2D goldens match closed forms to 1e-10 |
 | B (params, tiers, cache, normalisation, to_rust, tessellation, oracle, deviation and curvature queries, addendum 1) | done |
-| C (3D) | **prismatic models only** (Box, z-Cylinder, Extrude, z-rotations, Cut along axes, Pml, Periodic, Size); no sphere / cone / torus / revolve / slanted or skew geometry, no 3D edges and vertices |
+| C (3D) | prismatic models (Box, z-Cylinder, Extrude, z-rotations, Cut along axes, Pml, Periodic, Size), 3D edges and vertices, and `Sphere` / `Torus` bodies clear of everything else; **no** intersection curves between curved surfaces (cone, revolve, tapered, slanted or skew geometry, a sphere crossing a wall) |
 | D (layer stack, `surfaces_for_stuffing`, bench) | done for what C produces |
 
 ## What to check first when integrating
@@ -42,5 +42,5 @@ GEOM_WRITE_GOLDEN=1 cargo test --test goldens write_goldens   # regenerate golde
 ## Open items and risks (brief section 14)
 
 * The general 3D arrangement (quadrics, `SurfSurf`) is the remaining large piece; the prismatic route covers the photonic cases in the brief.
-* Source size is 7.3k lines after `rustfmt` (6.6k non-blank, non-comment), below the 8k stop line; the largest modules are `arrange.rs`, `scene.rs`, `select.rs`.
+* Source size is about 8.1k lines after `rustfmt`, just over the brief's 8k line; the largest modules are `arrange.rs`, `scene.rs`, `stack.rs`, `select.rs`. The growth since step B is the 3D work (`stack.rs`, `topo3.rs`) and the curved bodies.
 * The pair cache saves little at the model sizes measured; see the README performance table.

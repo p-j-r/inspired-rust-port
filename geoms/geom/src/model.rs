@@ -179,6 +179,17 @@ pub enum Op {
         r: Expr,
         h: Expr,
     },
+    /// 3D: sphere (one face `surface`; must not touch any other face)
+    Sphere {
+        center: [Expr; 3],
+        r: Expr,
+    },
+    /// 3D: torus with axis z (one face `surface`; must not touch any other face)
+    Torus {
+        center: [Expr; 3],
+        major: Expr,
+        minor: Expr,
+    },
     /// 3D: a 2D profile feature swept along z from `z0` to `z1`; roles `side:<profile role>`, `bottom`, `top`
     Extrude {
         profile: FeatureId,
@@ -253,6 +264,8 @@ impl Op {
             Op::Polygon { .. } => "Polygon",
             Op::RoundedRect { .. } => "RoundedRect",
             Op::Box { .. } => "Box",
+            Op::Sphere { .. } => "Sphere",
+            Op::Torus { .. } => "Torus",
             Op::Cylinder { .. } => "Cylinder",
             Op::Extrude { .. } => "Extrude",
             Op::Transform { .. } => "Transform",
@@ -276,6 +289,8 @@ impl Op {
             Op::RoundedRect { min, max, r } => min.iter().chain(max).chain([r]).collect(),
             Op::Circle { center, r } => center.iter().chain([r]).collect(),
             Op::Box { min, max } => min.iter().chain(max).collect(),
+            Op::Sphere { center, r } => center.iter().chain([r]).collect(),
+            Op::Torus { center, major, minor } => center.iter().chain([major, minor]).collect(),
             Op::Cylinder { base, r, h, .. } => base.iter().chain([r, h]).collect(),
             Op::Extrude { z0, z1, .. } => vec![z0, z1],
             Op::Ellipse { center, radii, angle_deg } => center.iter().chain(radii).chain([angle_deg]).collect(),
@@ -547,6 +562,23 @@ impl Model {
         h: impl Into<Expr>,
     ) -> FeatureId {
         self.push(name, Op::Cylinder { base: e3(base), axis: Axis::Z, r: r.into(), h: h.into() })
+    }
+    pub fn sphere(
+        &mut self,
+        name: &str,
+        center: (impl Into<Expr>, impl Into<Expr>, impl Into<Expr>),
+        r: impl Into<Expr>,
+    ) -> FeatureId {
+        self.push(name, Op::Sphere { center: e3(center), r: r.into() })
+    }
+    pub fn torus(
+        &mut self,
+        name: &str,
+        center: (impl Into<Expr>, impl Into<Expr>, impl Into<Expr>),
+        major: impl Into<Expr>,
+        minor: impl Into<Expr>,
+    ) -> FeatureId {
+        self.push(name, Op::Torus { center: e3(center), major: major.into(), minor: minor.into() })
     }
     pub fn extrude(&mut self, name: &str, profile: FeatureId, z0: impl Into<Expr>, z1: impl Into<Expr>) -> FeatureId {
         self.push(name, Op::Extrude { profile, z0: z0.into(), z1: z1.into() })

@@ -27,7 +27,7 @@ let si_box = lm.boundary("BOX|Si");                             // Vec<i32>
 let walls = ev.select_labels(&Selector::parse("outer")?)?;
 ```
 
-## 3D: layer stacks
+## 3D: layer stacks, edges and curved bodies
 
 A 3D model is evaluated as a stack of layers (cut at every z level where a solid starts or ends); each layer is a 2D arrangement, and the
 *overlay* is the common refinement of all of them, so every layer boundary is an edge of it. `Evaluated::layer_stack()` gives the layers
@@ -35,7 +35,9 @@ A 3D model is evaluated as a stack of layers (cut at every z level where a solid
 names of side faces from the overlay edges and of caps from the levels. Faces are fragments (a face split by another layer's features keeps one name).
 Boundary faces are `<feature>.<role>` with roles `xmin ... zmax` (Box), `side bottom top` (Cylinder), `side:<role> bottom top` (Extrude);
 interfaces are `A|B`; the faces of a `Cut` are `<feature>.cut`. The normal of a face points from `first` to `second` region
-(lateral: left to right of the swept overlay edge; caps: below to above).
+(lateral: left to right of the swept overlay edge; caps: below to above). 3D edges and vertices are derived from the face fragments
+(`edges3()`, `vertices()`): an edge is shared by two or more faces and named by them (`box.xmin/box.ymin`). `Sphere` and `Torus` bodies
+are added as edge-less closed faces when they are clear of everything else (see `CHANGELOG.md` for the exact rule).
 
 ## Decisions and conventions
 

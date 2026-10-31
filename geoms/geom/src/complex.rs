@@ -64,6 +64,8 @@ pub enum FaceGeom {
     Lateral { edge: u32, z0: f64, z1: f64 },
     /// a cell of the overlay at height `z`
     Cap { cell: u32, z: f64 },
+    /// a closed curved surface (sphere, torus) without edges, from a `Body`
+    Quadric(crate::prim::Body),
 }
 
 #[derive(Clone, Debug)]
@@ -255,7 +257,7 @@ impl Complex {
                 FaceGeom::Lateral { edge, .. } => {
                     Some(&self.overlay().curves[self.overlay().edges[edge as usize].curve as usize])
                 }
-                FaceGeom::Cap { .. } => None,
+                FaceGeom::Cap { .. } | FaceGeom::Quadric(_) => None,
             }
         } else {
             Some(&self.curves[self.edges[i as usize].curve as usize])
@@ -263,6 +265,11 @@ impl Complex {
     }
     /// `plane`, `cylinder` (3D) or `line`, `circle`, `ellipse` (2D).
     pub fn facet_kind(&self, i: u32) -> &'static str {
+        if let (3, FaceGeom::Quadric(b)) =
+            (self.dim, &self.faces.get(i as usize).map_or(FaceGeom::Cap { cell: 0, z: 0.0 }, |f| f.geom.clone()))
+        {
+            return b.kind();
+        }
         match (self.dim, self.facet_curve(i)) {
             (3, Some(Curve::Line { .. })) | (3, None) => "plane",
             (3, Some(Curve::Circle { .. })) => "cylinder",
@@ -272,6 +279,11 @@ impl Complex {
         }
     }
     pub fn facet_radius(&self, i: u32) -> Option<f64> {
+        if self.dim == 3 {
+            if let FaceGeom::Quadric(crate::prim::Body::Sphere { r, .. }) = self.faces[i as usize].geom {
+                return Some(r);
+            }
+        }
         match self.facet_curve(i) {
             Some(Curve::Circle { r, .. }) => Some(*r),
             _ => None,
@@ -292,6 +304,10 @@ impl Complex {
                         .collect()
                 }
                 FaceGeom::Cap { .. } => vec![[0.0, 0.0, sign]],
+                FaceGeom::Quadric(b) => [(0.25, 0.25), (0.5, 0.5), (0.75, 0.75)]
+                    .iter()
+                    .map(|&(u, v)| mul3(b.normal(b.point_at(u, v)), sign))
+                    .collect(),
             };
         }
         let e = &self.edges[i as usize];
@@ -319,6 +335,7 @@ impl Complex {
         }
         let ov = self.overlay();
         match self.faces[i as usize].geom {
+            FaceGeom::Quadric(b) => b.project(p),
             FaceGeom::Lateral { edge, z0, z1 } => {
                 let q = ov.project_edge(edge, [p[0], p[1]]);
                 [q[0], q[1], p[2].clamp(z0, z1)]
@@ -350,6 +367,10 @@ impl Complex {
         }
         let ov = self.overlay();
         match self.faces[i as usize].geom {
+            FaceGeom::Quadric(b) => (0..4)
+                .flat_map(|u| (0..=4).map(move |v| (u, v)))
+                .map(|(u, v)| b.point_at(u as f64 / 4.0, v as f64 / 4.0))
+                .collect(),
             FaceGeom::Lateral { edge, z0, z1 } => {
                 let (c, t0, t1) = ov.curve_of(edge);
                 let mut v = vec![];
@@ -400,6 +421,7 @@ impl Complex {
                     [(z1 - z0) * (b[1] - a[1]), -(z1 - z0) * (b[0] - a[0]), 0.0]
                 }
                 FaceGeom::Cap { .. } => [0.0, 0.0, f.area],
+                FaceGeom::Quadric(_) => [0.0; 3],
             };
             for (r, s) in [(f.first, 1.0), (f.second, -1.0)] {
                 if let Some(r) = r {

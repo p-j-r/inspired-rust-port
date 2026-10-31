@@ -41,6 +41,7 @@ pub fn build(cx: &Complex) -> (Vec<Edge3>, Vec<Vertex>) {
             FaceGeom::Cap { cell, z } => {
                 cap.insert((cell, lev(z)), fi as u32);
             }
+            FaceGeom::Quadric(_) => {}
         }
     }
     struct Raw {
@@ -53,7 +54,7 @@ pub fn build(cx: &Complex) -> (Vec<Edge3>, Vec<Vertex>) {
     // vertical edges: per overlay vertex, runs of layers with the same face set
     for (v, vx) in ov.vertices.iter().enumerate() {
         let mut run: Option<(usize, usize, Vec<u32>)> = None;
-        let mut flush = |run: &mut Option<(usize, usize, Vec<u32>)>, raws: &mut Vec<Raw>| {
+        let flush = |run: &mut Option<(usize, usize, Vec<u32>)>, raws: &mut Vec<Raw>| {
             if let Some((k0, k1, faces)) = run.take() {
                 let (z0, z1) = (layers[k0].z0, layers[k1].z1);
                 raws.push(Raw {
@@ -103,7 +104,7 @@ pub fn build(cx: &Complex) -> (Vec<Edge3>, Vec<Vertex>) {
             }
         }
     }
-    raws.sort_by(|a, b| a.key.cmp(&b.key));
+    raws.sort_by_key(|a| a.key);
     // vertices in order of first appearance
     let mut vid: BTreeMap<(u32, usize), u32> = BTreeMap::new();
     let mut vertices: Vec<Vertex> = vec![];
@@ -210,6 +211,7 @@ impl Complex {
                     let e = &ov.edges[edge as usize];
                     2.0 * e.length + if e.v0 == e.v1 { 0.0 } else { 2.0 * (z1 - z0) }
                 }
+                FaceGeom::Quadric(_) => 0.0,
                 FaceGeom::Cap { cell, .. } => ov.regions[cell as usize]
                     .loops
                     .iter()

@@ -188,6 +188,8 @@ pub fn build(code: &str) -> Model {
             "rect" => Some(m.rect(&st(&a[0]), e2(&a[1]), e2(&a[2]))),
             "rounded_rect" => Some(m.rounded_rect(&st(&a[0]), e2(&a[1]), e2(&a[2]), expr(&a[3]))),
             "circle" => Some(m.circle(&st(&a[0]), e2(&a[1]), expr(&a[2]))),
+            "sphere" => Some(m.sphere(&st(&a[0]), e3(&a[1]), expr(&a[2]))),
+            "torus" => Some(m.torus(&st(&a[0]), e3(&a[1]), expr(&a[2]), expr(&a[3]))),
             "box_" => Some(m.box_(&st(&a[0]), e3(&a[1]), e3(&a[2]))),
             "cylinder" => Some(m.cylinder(&st(&a[0]), e3(&a[1]), expr(&a[2]), expr(&a[3]))),
             "extrude" => Some(m.extrude(&st(&a[0]), fid(&a[1], &ids), expr(&a[2]), expr(&a[3]))),

@@ -118,7 +118,12 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
     let np = prims.len();
 
     // z levels
-    let mut zs: Vec<(f64, usize)> = prims.iter().enumerate().flat_map(|(i, p)| [(p.z.0, i), (p.z.1, i)]).collect();
+    let mut zs: Vec<(f64, usize)> = prims
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.body.is_none())
+        .flat_map(|(i, p)| [(p.z.0, i), (p.z.1, i)])
+        .collect();
     zs.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut levels: Vec<f64> = vec![];
     for (k, &(z, i)) in zs.iter().enumerate() {
@@ -146,7 +151,8 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
     let mut raws: Vec<Raw> = vec![];
     for w in levels.windows(2) {
         let (z0, z1) = (w[0], w[1]);
-        let active: Vec<bool> = prims.iter().map(|p| snap(p.z.0) <= z0 && snap(p.z.1) >= z1).collect();
+        let active: Vec<bool> =
+            prims.iter().map(|p| p.body.is_none() && snap(p.z.0) <= z0 && snap(p.z.1) >= z1).collect();
         let exprs: Vec<Node> = scene.regions.iter().map(|r| substitute(&r.expr, &active).simplify(prims)).collect();
         if exprs.iter().all(|e| *e == Node::Empty) {
             continue;
@@ -185,7 +191,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         raws.push(Raw { z0, z1, exprs, cx });
     }
     if raws.is_empty() {
-        return Err(GeomError("the model has no region with any volume".into()));
+        return Err(GeomError("the model has no prismatic host: curved bodies (sphere, torus) must sit inside a box, cylinder or extruded solid in this build".into()));
     }
 
     // final regions: every declared region, and generated (Pml) ones that exist in some layer
@@ -472,6 +478,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         match f.geom {
             FaceGeom::Lateral { edge, z0, .. } => (fe, ins, ro, 0, edge, (z0 / tol).round() as i64),
             FaceGeom::Cap { cell, z } => (fe, ins, ro, 1, cell, (z / tol).round() as i64),
+            FaceGeom::Quadric(_) => (fe, ins, ro, 2, 0, 0),
         }
     };
     let mut keyed: Vec<_> = faces.into_iter().map(|f| (fkey(&f), f)).collect();
@@ -502,6 +509,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         stack: Some(Box::new(stack)),
     };
     let mut cx = cx;
+    add_bodies(scene, &mut cx, band)?;
     let (edges3, vertices) = crate::topo3::build(&cx);
     cx.edges3 = edges3;
     cx.vertices = vertices;
@@ -512,9 +520,25 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Surface {
     /// `n . p = d`, `n` a unit normal
-    Plane { n: V3, d: f64 },
+    Plane {
+        n: V3,
+        d: f64,
+    },
     /// the axis through `c` along `axis` (unit), radius `r`
-    Cylinder { c: V3, axis: V3, r: f64 },
+    Cylinder {
+        c: V3,
+        axis: V3,
+        r: f64,
+    },
+    Sphere {
+        c: V3,
+        r: f64,
+    },
+    Torus {
+        c: V3,
+        major: f64,
+        minor: f64,
+    },
 }
 
 /// One surface with the faces on it and the extent of those faces, so a mesher keeps a *local* surface list per lattice cell.
@@ -547,6 +571,10 @@ impl crate::eval::Evaluated {
                     }
                 }
                 FaceGeom::Cap { z, .. } => Surface::Plane { n: [0.0, 0.0, 1.0], d: z },
+                FaceGeom::Quadric(crate::prim::Body::Sphere { c, r }) => Surface::Sphere { c, r },
+                FaceGeom::Quadric(crate::prim::Body::Torus { c, big, small }) => {
+                    Surface::Torus { c, major: big, minor: small }
+                }
             };
             let same = |a: &Surface| match (a, &surf) {
                 (Surface::Plane { n: n1, d: d1 }, Surface::Plane { n: n2, d: d2 }) => {
@@ -567,4 +595,105 @@ impl crate::eval::Evaluated {
         }
         out
     }
+}
+
+/// Curved bodies (sphere, torus) are added to the host stack as closed faces without edges, provided every body is clear of every
+/// other face and body (disjoint or nested spheres): the distance is exact for spheres, a bounding-box test for tori. Anything that
+/// touches or crosses is refused with both names; the intersection curves of general quadrics are not implemented.
+fn add_bodies(scene: &Scene, cx: &mut Complex, band: f64) -> GeomResult<()> {
+    use crate::prim::Body;
+    let prims = &scene.prims;
+    let bodies: Vec<(usize, Body)> = prims.iter().enumerate().filter_map(|(i, p)| p.body.map(|b| (i, b))).collect();
+    if bodies.is_empty() {
+        return Ok(());
+    }
+    let nhost = cx.faces.len();
+    for (a, &(ia, ba)) in bodies.iter().enumerate() {
+        let name = &prims[ia].name;
+        for fi in 0..nhost {
+            let fname = &cx.faces[fi].name;
+            let clear = match ba {
+                Body::Sphere { c, r } => norm3(sub3(cx.facet_project(fi as u32, c), c)) > r + band,
+                Body::Torus { .. } => !ba.bbox().pad(band).overlaps(&cx.faces[fi].bbox),
+            };
+            if !clear {
+                return Err(GeomError(format!(
+                    "{} '{name}' touches, crosses or encloses the face '{fname}'; a curved body must lie clear of every other face (its intersection curves are not implemented): move it by more than {band:.1e} m",
+                    ba.kind()
+                )));
+            }
+        }
+        for &(ib, bb) in &bodies[a + 1..] {
+            let other = &prims[ib].name;
+            let ok = match (ba, bb) {
+                (Body::Sphere { c: c1, r: r1 }, Body::Sphere { c: c2, r: r2 }) => {
+                    let d = norm3(sub3(c1, c2));
+                    d > r1 + r2 + band || d + r1.min(r2) < r1.max(r2) - band
+                }
+                _ => !ba.bbox().pad(band).overlaps(&bb.bbox()),
+            };
+            if !ok {
+                return Err(GeomError(format!(
+                    "{} '{name}' and {} '{other}' intersect or touch; only disjoint bodies, or one sphere strictly inside another, are supported",
+                    ba.kind(),
+                    bb.kind()
+                )));
+            }
+        }
+    }
+    for &(ia, ba) in &bodies {
+        let p0 = match ba {
+            Body::Sphere { c, r } => [c[0] + r, c[1], c[2]],
+            Body::Torus { c, big, small } => [c[0] + big + small, c[1], c[2]],
+        };
+        let region_at = |inside: bool| -> Option<u32> {
+            let bits: Vec<bool> =
+                prims.iter().enumerate().map(|(i, q)| if i == ia { inside } else { q.sdf3(p0, band) < 0.0 }).collect();
+            scene.region_of(&|i| bits[i]).and_then(|s| cx.scene_to_region[s])
+        };
+        let (rin, rout) = (region_at(true), region_at(false));
+        if rin == rout {
+            continue;
+        }
+        let v = ba.volume();
+        if let Some(r) = rin {
+            cx.regions[r as usize].measure += v;
+            cx.regions[r as usize].bbox = cx.regions[r as usize].bbox.union(&ba.bbox());
+        }
+        if let Some(r) = rout {
+            cx.regions[r as usize].measure -= v;
+        }
+        let p = &prims[ia];
+        let name = match (rin, rout) {
+            (Some(x), Some(y)) => {
+                let (mut a, mut b) = (cx.regions[x as usize].name.clone(), cx.regions[y as usize].name.clone());
+                if a > b {
+                    std::mem::swap(&mut a, &mut b);
+                }
+                format!("{a}|{b}")
+            }
+            (r, o) => match scene.naming {
+                crate::model::NameScheme::Feature => format!("{}.surface", p.name),
+                _ => format!("{}.surface", cx.regions[r.or(o).unwrap() as usize].name),
+            },
+        };
+        cx.faces.push(Face {
+            name,
+            geom: FaceGeom::Quadric(ba),
+            first: rin,
+            second: rout,
+            prov: vec![Prov { feature: p.feature, instance: p.name.clone(), role: "surface".into() }],
+            area: ba.area(),
+            bbox: ba.bbox(),
+        });
+    }
+    if scene.naming == NameScheme::Numbered {
+        let mut count = vec![0usize; cx.regions.len()];
+        for f in cx.faces.iter_mut().filter(|f| f.first.is_none() || f.second.is_none()) {
+            let r = f.first.or(f.second).unwrap() as usize;
+            count[r] += 1;
+            f.name = format!("{}.{}", cx.regions[r].name, count[r]);
+        }
+    }
+    Ok(())
 }
