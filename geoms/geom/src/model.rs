@@ -30,6 +30,18 @@ pub enum Origin {
     Code,
 }
 
+/// How boundary faces (a region against the void) are named. Interfaces between two regions are always `A|B`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NameScheme {
+    /// `<feature>.<role>`: after the shape that drew the face (`box.bottom`)
+    #[default]
+    Feature,
+    /// `<region>.<role>`: after the material / region it bounds (`BOX.bottom`)
+    Region,
+    /// `<region>.<n>`: the region name and a running number in a deterministic order (`BOX.3`); needs no knowledge of roles
+    Numbered,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RegionKind {
     Material,
@@ -196,6 +208,8 @@ pub enum Op {
     Overlay {
         regions: Vec<RegionDef>,
         pins: Vec<LabelPin>,
+        #[serde(default)]
+        naming: NameScheme,
     },
     /// absorbing layers of `thickness` around the window `window` on `sides` (empty: all); splits every matching region
     /// (`regions` empty: all) into the physical part and one `<region>.pml_<sides>` piece per side combination
@@ -477,6 +491,16 @@ impl Model {
         id
     }
 
+    /// Chooses how boundary faces are named (see `NameScheme`); applies to the model's overlay.
+    pub fn set_naming(&mut self, scheme: NameScheme) -> &mut Self {
+        for f in &mut self.list.features {
+            if let Op::Overlay { naming, .. } = &mut f.op {
+                *naming = scheme;
+            }
+        }
+        self
+    }
+
     pub fn tag_feature(&mut self, id: FeatureId, tag: &str) -> &mut Self {
         if let Some(f) = self.list.features.iter_mut().find(|f| f.id == id) {
             f.tags.push(tag.to_string());
@@ -587,10 +611,10 @@ impl Model {
             .iter()
             .map(|(n, i)| RegionDef { name: n.to_string(), input: *i, kind: RegionKind::Material, pinned_id: None })
             .collect();
-        self.push("overlay", Op::Overlay { regions, pins: vec![] })
+        self.push("overlay", Op::Overlay { regions, pins: vec![], naming: NameScheme::Feature })
     }
     pub fn overlay_defs(&mut self, regions: Vec<RegionDef>, pins: Vec<LabelPin>) -> FeatureId {
-        self.push("overlay", Op::Overlay { regions, pins })
+        self.push("overlay", Op::Overlay { regions, pins, naming: NameScheme::Feature })
     }
     /// Regions with kinds and pinned ids, and boundary pins given as `(selector text, label)`.
     pub fn overlay_full(
@@ -606,7 +630,7 @@ impl Model {
             .iter()
             .map(|(s, id)| LabelPin { sel: Selector::parse(s).expect("a valid selector in overlay_full"), id: *id })
             .collect();
-        self.push("overlay", Op::Overlay { regions, pins })
+        self.push("overlay", Op::Overlay { regions, pins, naming: NameScheme::Feature })
     }
     pub fn pml(
         &mut self,

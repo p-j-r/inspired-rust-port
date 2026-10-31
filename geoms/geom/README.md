@@ -43,7 +43,10 @@ interfaces are `A|B`; the faces of a `Cut` are `<feature>.cut`. The normal of a 
 * **Edges** run along the canonical direction of their curve (lines: angle in (-90 deg, 90 deg]; circles and ellipses counter-clockwise from
   the major axis, i.e. from angle 0 for circles). `left` / `right` are the regions on either side; the edge normal points from `left` to `right`.
   A `None` side is the void (outside, or a removed hole).
-* **Names**: boundary edges (one side void) `<feature instance>.<role>` taken from the origin that belongs to the inside region;
+* **Naming scheme** (`Model::set_naming`, stored in the `Overlay`): `Feature` (default) names a boundary after the shape that drew it,
+  `box.bottom`; `Region` after the material it bounds, `BOX.bottom`; `Numbered` after the region and a running number, `BOX.3`, which needs no
+  roles at all. Interfaces are always `A|B`. Whatever the scheme, `from(feature, role)` still finds a face by the shape that produced it.
+* **Names** (default scheme): boundary edges (one side void) `<feature instance>.<role>` taken from the origin that belongs to the inside region;
   interfaces `A|B` with the region names sorted. Roles are fixed per primitive (see `prim.rs`). Pattern instances append `[i]`.
 * **Ids** are dense and deterministic; edges are ordered by (first origin feature id, instance, role, fraction along the origin segment),
   which does not depend on parameter values.

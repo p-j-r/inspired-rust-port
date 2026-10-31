@@ -267,3 +267,44 @@ fn serde_round_trips_bit_exactly_and_is_xml_compatible() {
     m.overlay(&[("r", r)]);
     assert!(m.eval(Tier::Complex).err().unwrap().0.contains("max corner of feature 'r'"));
 }
+
+#[test]
+fn naming_schemes_are_selectable_and_deterministic() {
+    use geom::model::NameScheme;
+    let names = |s: NameScheme| {
+        let mut g = common::soi_strip();
+        g.model.set_naming(s);
+        let ev = g.model.eval(Tier::Complex).unwrap();
+        let mut v: Vec<String> = ev.edges().iter().map(|e| e.name.clone()).collect();
+        v.sort();
+        (v, ev)
+    };
+    let (feat, _) = names(NameScheme::Feature);
+    assert!(feat.contains(&"box.bottom".to_string()));
+    let (reg, ev) = names(NameScheme::Region);
+    assert!(
+        reg.contains(&"BOX.bottom".to_string())
+            && reg.contains(&"clad.top".to_string())
+            && reg.contains(&"BOX|Si".to_string())
+    );
+    // the shape that drew a face stays reachable by provenance whatever the name
+    assert_eq!(ev.resolve(&Selector::parse("from(box, bottom)").unwrap()).unwrap().set.ids.len(), 1);
+    let (num, ev) = names(NameScheme::Numbered);
+    assert!(
+        num.contains(&"BOX.1".to_string())
+            && num.contains(&"clad.1".to_string())
+            && !num.iter().any(|n| n.contains("bottom"))
+    );
+    assert_eq!(num.iter().filter(|n| n.starts_with("BOX.")).count(), 3); // bottom, left, right
+    assert_eq!(ev.label_map().unwrap().boundary("BOX.2").len(), 1);
+    // 3D: the same schemes on faces, and the printed code keeps the choice
+    let mut m = common::bragg3("b", true, true).model;
+    m.set_naming(NameScheme::Region);
+    let ev = m.eval(Tier::Complex).unwrap();
+    assert!(ev.faces().iter().any(|f| f.name == "BOX.zmin") && ev.faces().iter().any(|f| f.name == "Si.zmin"));
+    m.set_naming(NameScheme::Numbered);
+    let ev = m.eval(Tier::Complex).unwrap();
+    assert!(ev.faces().iter().any(|f| f.name == "clad.1") && !ev.faces().iter().any(|f| f.name.contains("zmin")));
+    ev.complex().check().unwrap();
+    assert_eq!(common::interp::build(&m.list.to_rust()).list, m.list);
+}

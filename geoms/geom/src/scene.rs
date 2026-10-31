@@ -184,6 +184,7 @@ pub struct Scene {
     /// union of the non-auxiliary primitives
     pub bounds: Aabb,
     pub warnings: Vec<String>,
+    pub naming: NameScheme,
     /// (feature, role, tag) added by the operations (Cut: `symmetry`)
     pub auto_tags: Vec<(FeatureId, String, String)>,
 }
@@ -576,7 +577,7 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
         .iter()
         .find(|f| matches!(f.op, Op::Overlay { .. }) && !f.suppressed)
         .ok_or_else(|| GeomError("the model has no Overlay feature; add one that lists the regions".into()))?;
-    let Op::Overlay { regions, pins } = &overlay.op else { unreachable!() };
+    let Op::Overlay { regions, pins, naming } = &overlay.op else { unreachable!() };
     let index = list.features.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
     let mut b = Builder { list, env: &env, cache, prims: vec![], memo: HashMap::new(), index, depth: 0, extrude: None };
     let mut rx: Vec<RegionX> = vec![];
@@ -796,7 +797,17 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
     }
     let prims = kept;
     let bounds = model_box(&prims);
-    Ok(Scene { dim: list.dim, env, prims, regions: rx, pins: pins.clone(), bounds, warnings, auto_tags })
+    Ok(Scene {
+        dim: list.dim,
+        env,
+        prims,
+        regions: rx,
+        pins: pins.clone(),
+        bounds,
+        warnings,
+        naming: *naming,
+        auto_tags,
+    })
 }
 
 /// Lower corner of the non-auxiliary primitives along an axis.

@@ -12,7 +12,7 @@ use crate::complex::*;
 use crate::curve::*;
 use crate::error::{GeomError, GeomResult};
 use crate::math::*;
-use crate::model::RegionKind;
+use crate::model::{NameScheme, RegionKind};
 use crate::prim::*;
 use crate::scene::{Cache, RegionX, Scene};
 use std::collections::HashMap;
@@ -838,7 +838,10 @@ fn finish(
                     }
                 }
                 let b = best.unwrap();
-                format!("{}.{}", b.2, b.3)
+                match scene.naming {
+                    NameScheme::Feature => format!("{}.{}", b.2, b.3),
+                    _ => format!("{}.{}", regions[left.or(right).unwrap() as usize].name, b.3),
+                }
             }
         };
         let length = c.length(k.t0, k.t1);
@@ -864,6 +867,15 @@ fn finish(
         vedges[v0 as usize].push(e as u32);
         if v1 != v0 {
             vedges[v1 as usize].push(e as u32);
+        }
+    }
+
+    if scene.naming == NameScheme::Numbered {
+        let mut count = vec![0usize; regions.len()];
+        for ed in edges.iter_mut().filter(|e| e.left.is_none() || e.right.is_none()) {
+            let r = ed.left.or(ed.right).unwrap() as usize;
+            count[r] += 1;
+            ed.name = format!("{}.{}", regions[r].name, count[r]);
         }
     }
 

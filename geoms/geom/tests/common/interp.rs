@@ -285,6 +285,15 @@ pub fn build(code: &str) -> Model {
             "periodic" => Some(m.periodic(&st(&a[0]), sel(&a[1]), sel(&a[2]), e3(&a[3]))),
             "size" => Some(m.size(&st(&a[0]), sel(&a[1]), opt_expr(&a[2]), opt_expr(&a[3]), opt_expr(&a[4]))),
             "tag" => Some(m.tag(&st(&a[0]), sel(&a[1]), &st(&a[2]))),
+            "set_naming" => {
+                let A::Path(k) = &a[0] else { panic!() };
+                m.set_naming(match k.as_str() {
+                    "NameScheme::Region" => NameScheme::Region,
+                    "NameScheme::Numbered" => NameScheme::Numbered,
+                    _ => NameScheme::Feature,
+                });
+                None
+            }
             "suppress" => {
                 m.suppress(fid(&a[0], &ids), true);
                 None

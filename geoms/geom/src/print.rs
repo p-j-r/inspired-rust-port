@@ -42,6 +42,7 @@ pub fn to_rust(l: &FeatureList) -> String {
     for f in &l.features {
         let n = format!("{:?}", f.name);
         let id = f.id;
+        let naming = if let Op::Overlay { naming, .. } = &f.op { *naming } else { NameScheme::Feature };
         let call = match &f.op {
             Op::Rect { min, max } => format!("m.rect({n}, {}, {})", t2(min), t2(max)),
             Op::RoundedRect { min, max, r } => format!("m.rounded_rect({n}, {}, {}, {})", t2(min), t2(max), e(r)),
@@ -70,7 +71,7 @@ pub fn to_rust(l: &FeatureList) -> String {
             Op::Union { ids: v } => format!("m.union({n}, &[{}])", ids(v)),
             Op::Intersect { ids: v } => format!("m.intersect({n}, &[{}])", ids(v)),
             Op::Difference { a, b } => format!("m.difference({n}, f{a}, &[{}])", ids(b)),
-            Op::Overlay { regions, pins } if f.name == "overlay" => {
+            Op::Overlay { regions, pins, .. } if f.name == "overlay" => {
                 if pins.is_empty() && regions.iter().all(|r| r.kind == RegionKind::Material && r.pinned_id.is_none()) {
                     let r: Vec<String> = regions.iter().map(|r| format!("({:?}, f{})", r.name, r.input)).collect();
                     format!("m.overlay(&[{}])", r.join(", "))
@@ -116,6 +117,9 @@ pub fn to_rust(l: &FeatureList) -> String {
             op => format!("m.push({n}, {})", dbg(op)),
         };
         s.push_str(&format!("let f{id} = {call};\n"));
+        if naming != NameScheme::Feature {
+            s.push_str(&format!("m.set_naming(NameScheme::{naming:?});\n"));
+        }
         if f.suppressed {
             s.push_str(&format!("m.suppress(f{id}, true);\n"));
         }

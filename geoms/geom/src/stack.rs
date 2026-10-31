@@ -11,7 +11,7 @@ use crate::arrange::{arrange, arrange_with};
 use crate::complex::*;
 use crate::error::{GeomError, GeomResult};
 use crate::math::*;
-use crate::model::{Axis, RegionKind};
+use crate::model::{Axis, NameScheme, RegionKind};
 use crate::scene::{Cache, Node, RegionX, Scene};
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -177,6 +177,8 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
             pins: vec![],
             bounds: scene.bounds,
             warnings: vec![],
+            // numbering is applied to the 3D faces at the end; the layers keep role names so fragments can be matched and merged
+            naming: if scene.naming == NameScheme::Numbered { NameScheme::Region } else { scene.naming },
             auto_tags: vec![],
         };
         let cx = arrange(&ls, cache).map_err(|e| GeomError(format!("layer z = {z0:.6e}..{z1:.6e}: {}", e.0)))?;
@@ -266,6 +268,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         pins: vec![],
         bounds: scene.bounds,
         warnings: vec![],
+        naming: NameScheme::Feature,
         auto_tags: vec![],
     };
     let mut overlay = arrange_with(&ov_scene, cache, &classify, &synth)?;
@@ -428,7 +431,12 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
                         match best {
                             Some((_, feature, nm)) => {
                                 let (inst, role) = nm.rsplit_once('.').unwrap();
-                                (nm.clone(), vec![Prov { feature, instance: inst.to_string(), role: role.to_string() }])
+                                let shown = if scene.naming == NameScheme::Feature {
+                                    nm.clone()
+                                } else {
+                                    format!("{}.{role}", regions[region as usize].name)
+                                };
+                                (shown, vec![Prov { feature, instance: inst.to_string(), role: role.to_string() }])
                             }
                             None => (
                                 format!("{}.{}", regions[region as usize].name, if top { "top" } else { "bottom" }),
@@ -468,7 +476,15 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
     };
     let mut keyed: Vec<_> = faces.into_iter().map(|f| (fkey(&f), f)).collect();
     keyed.sort_by(|a, b| a.0.cmp(&b.0));
-    let faces: Vec<Face> = keyed.into_iter().map(|x| x.1).collect();
+    let mut faces: Vec<Face> = keyed.into_iter().map(|x| x.1).collect();
+    if scene.naming == NameScheme::Numbered {
+        let mut count = vec![0usize; regions.len()];
+        for f in faces.iter_mut().filter(|f| f.first.is_none() || f.second.is_none()) {
+            let r = f.first.or(f.second).unwrap() as usize;
+            count[r] += 1;
+            f.name = format!("{}.{}", regions[r].name, count[r]);
+        }
+    }
 
     let stack = LayerStack { axis: Axis::Z, layers, overlay: overlay.clone() };
     let cx = Complex {

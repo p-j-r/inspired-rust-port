@@ -1,5 +1,9 @@
 # Changelog
 
+## Naming schemes
+
+* `NameScheme::{Feature, Region, Numbered}` on the `Overlay` (serde default `Feature`, so existing files are unchanged), `Model::set_naming`, printed by `to_rust`. Works for 2D edges and 3D faces.
+
 ## Steps C and D (prismatic 3D, layer stacks) - delivered in part, see "Not delivered"
 
 * 3D feature lists: `Box`, `Cylinder` (axis z), `Extrude` of any 2D profile, Transform (translate, rotate about z, mirror, uniform
