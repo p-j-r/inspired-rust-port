@@ -73,6 +73,42 @@ fn clean_shape() -> impl Strategy<Value = Shape> {
     ]
 }
 
+fn solid() -> impl Strategy<Value = (f64, f64, f64, f64, f64, f64, bool)> {
+    (coord(), coord(), coord(), 0.5f64..3.0, 0.5f64..3.0, 0.2f64..2.0, any::<bool>())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 200, failure_persistence: None, ..ProptestConfig::default() })]
+
+    #[test]
+    fn random_3d_models_never_panic_and_stay_closed(solids in proptest::collection::vec(solid(), 1..5), op in 0u8..3) {
+        let mut m = Model::new_3d();
+        let ids: Vec<FeatureId> = solids
+            .iter()
+            .enumerate()
+            .map(|(i, &(x, y, z, a, b, h, cyl))| {
+                if cyl { m.cylinder(&format!("s{i}"), (x, y, z), a.min(b) * 0.5, h) } else { m.box_(&format!("s{i}"), (x, y, z), (x + a, y + b, z + h)) }
+            })
+            .collect();
+        let mut regs: Vec<(String, FeatureId)> = ids.iter().enumerate().map(|(i, &id)| (format!("R{i}"), id)).collect();
+        if ids.len() > 1 {
+            let id = match op {
+                0 => m.union("u", &ids[..2]),
+                1 => m.difference("d", ids[0], &ids[1..2]),
+                _ => m.intersect("i", &ids[..2]),
+            };
+            regs.push(("X".into(), id));
+        }
+        let regs: Vec<(&str, FeatureId)> = regs.iter().map(|(n, i)| (n.as_str(), *i)).collect();
+        m.overlay(&regs);
+        if let Some(ev) = ok_or_refusal(m.eval(Tier::Complex)) {
+            ev.complex().check().unwrap();
+            prop_assert!(ev.layer_stack().is_some());
+            for r in ev.regions() { prop_assert!(r.measure >= 0.0); }
+        }
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 300, failure_persistence: None, ..ProptestConfig::default() })]
 

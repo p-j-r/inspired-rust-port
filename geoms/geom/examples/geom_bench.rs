@@ -98,5 +98,32 @@ fn main() {
     let e = Evaluator::new().eval(&m.list, Tier::Complex).unwrap();
     println!("200-hole pattern: {} edges", e.edges().len());
     let _ = cold;
+
+    // 3D: one Bragg period (two layers), and a slab with a 10 x 10 grid of cylindrical holes (a photonic-crystal slab)
+    let mut m = Model::new_3d();
+    m.param("w", 500e-9).param("t", 300e-9).param("p", 280e-9).param("tooth", 80e-9);
+    let clad = m.box_("clad", ("-1.2e-6", "-2e-6", 0.0), ("1.2e-6", "1.3e-6", "p"));
+    let core = m.box_("core", ("-w/2", 0.0, 0.0), ("w/2", "t", "p"));
+    let lt = m.box_("lt", ("-w/2-tooth", 0.0, 0.0), ("-w/2", "t", "p/2"));
+    let rt = m.box_("rt", ("w/2", 0.0, 0.0), ("w/2+tooth", "t", "p/2"));
+    m.overlay(&[("clad", clad), ("Si", core), ("lt", lt), ("rt", rt)]);
+    let l3 = m.list.clone();
+    time("evaluate one Bragg period (3D, 2 layers)", 50, || Evaluator::new().eval(&l3, Tier::Complex).unwrap());
+    let mut m = Model::new_3d();
+    let slab = m.box_("slab", (0.0, 0.0, 0.0), (11.0, 11.0, 0.22));
+    let hole = m.cylinder("hole", (0.5, 0.5, -0.1), 0.2, 0.42);
+    let row = m.linear_pattern("row", hole, (1.0, 0.0, 0.0), 10.0);
+    let grid = m.linear_pattern("grid", row, (0.0, 1.0, 0.0), 10.0);
+    let d = m.difference("pc", slab, &[grid]);
+    m.overlay(&[("slab", d)]);
+    let pc = m.list.clone();
+    let e = Evaluator::new().eval(&pc, Tier::Complex).unwrap();
+    println!(
+        "photonic-crystal slab: {} faces, {} overlay edges",
+        e.faces().len(),
+        e.layer_stack().unwrap().overlay.edges.len()
+    );
+    time("evaluate the 100-hole photonic-crystal slab (3D)", 5, || Evaluator::new().eval(&pc, Tier::Complex).unwrap());
+    time("tessellate it (max_dev 1e-3)", 5, || e.tessellate(1e-3));
     time("evaluate the 200-hole plate (cold)", 10, || Evaluator::new().eval(&m.list, Tier::Complex).unwrap());
 }

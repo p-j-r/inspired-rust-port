@@ -125,34 +125,7 @@ impl Evaluated {
     /// Points `(t, p)` along the edge, end points included, such that the chord deviation is at most `max_dev` and each chord is at
     /// most `max_len` long. Depends only on the edge, so both neighbouring regions get identical points; deterministic.
     pub fn discretize_edge(&self, e: u32, o: DiscretizeOpts) -> Vec<(f64, V3)> {
-        let (c, t0, t1) = self.complex().curve_of(e);
-        let sweep = t1 - t0;
-        let len = self.length(e);
-        let mut n = (len / o.max_len).ceil().max(1.0) as usize;
-        match c {
-            Curve::Line { .. } => {}
-            Curve::Circle { r, .. } => {
-                let half = (1.0 - o.max_dev / r).clamp(-1.0, 1.0).acos();
-                n = n
-                    .max((sweep / (2.0 * half).max(1e-3)).ceil() as usize)
-                    .max((sweep / std::f64::consts::FRAC_PI_2).ceil() as usize);
-            }
-            Curve::Ellipse { .. } => n = n.max((sweep / (std::f64::consts::PI / 8.0)).ceil() as usize),
-        }
-        let mut ts: Vec<f64> = (0..=n).map(|k| t0 + sweep * k as f64 / n as f64).collect();
-        if let Curve::Ellipse { .. } = c {
-            // refine where the sampled chord deviation is too large
-            let mut k = 0;
-            while k + 1 < ts.len() && ts.len() < 100_000 {
-                if chord_dev(c, ts[k], ts[k + 1]) > o.max_dev || dist2(c.eval(ts[k]), c.eval(ts[k + 1])) > o.max_len {
-                    ts.insert(k + 1, 0.5 * (ts[k] + ts[k + 1]));
-                } else {
-                    k += 1;
-                }
-            }
-        }
-        let last = ts.len() - 1;
-        ts.iter().enumerate().map(|(i, &t)| (t, to3(c.eval(if i == last { t1 } else { t })))).collect()
+        self.complex().discretize_edge(e, o)
     }
 
     // ---- parametric positions (parameter sweeps) -----------------------------------------------------------------------------
@@ -166,17 +139,61 @@ impl Evaluated {
                 let (t, _) = self.complex().edge_closest(i, [p[0], p[1]]);
                 Some(Fractions { u: ((t - ed.t0) / (ed.t1 - ed.t0)).clamp(0.0, 1.0), v: 0.0 })
             }
+            EntityRef::Face(i) if (i as usize) < self.complex().faces.len() => {
+                let cx = self.complex();
+                let q = cx.facet_project(i, p);
+                let f = &cx.faces[i as usize];
+                Some(match f.geom {
+                    crate::complex::FaceGeom::Lateral { edge, z0, z1 } => {
+                        let ov = &cx.stack.as_ref()?.overlay;
+                        let ed = &ov.edges[edge as usize];
+                        let (t, _) = ov.edge_closest(edge, [q[0], q[1]]);
+                        Fractions {
+                            u: ((t - ed.t0) / (ed.t1 - ed.t0)).clamp(0.0, 1.0),
+                            v: ((q[2] - z0) / (z1 - z0)).clamp(0.0, 1.0),
+                        }
+                    }
+                    crate::complex::FaceGeom::Cap { .. } => {
+                        let b = f.bbox;
+                        let frac = |x: f64, k: usize| {
+                            if b.hi[k] > b.lo[k] {
+                                ((x - b.lo[k]) / (b.hi[k] - b.lo[k])).clamp(0.0, 1.0)
+                            } else {
+                                0.0
+                            }
+                        };
+                        Fractions { u: frac(q[0], 0), v: frac(q[1], 1) }
+                    }
+                })
+            }
             EntityRef::Vertex(i) if (i as usize) < self.complex().vertices.len() => Some(Fractions { u: 0.0, v: 0.0 }),
             _ => None,
         }
     }
 
     /// The exact point of the entity at the given fractions.
-    pub fn position_at(&self, ent: EntityRef, f: Fractions) -> Option<V3> {
+    pub fn position_at(&self, ent: EntityRef, fr: Fractions) -> Option<V3> {
         match ent {
             EntityRef::Edge(i) if (i as usize) < self.complex().edges.len() => {
                 let ed = &self.complex().edges[i as usize];
-                Some(self.complex().edge_point(i, ed.t0 + f.u.clamp(0.0, 1.0) * (ed.t1 - ed.t0)))
+                Some(self.complex().edge_point(i, ed.t0 + fr.u.clamp(0.0, 1.0) * (ed.t1 - ed.t0)))
+            }
+            EntityRef::Face(i) if (i as usize) < self.complex().faces.len() => {
+                let cx = self.complex();
+                let f = &cx.faces[i as usize];
+                let p = match f.geom {
+                    crate::complex::FaceGeom::Lateral { edge, z0, z1 } => {
+                        let ed = &cx.stack.as_ref()?.overlay.edges[edge as usize];
+                        let q = cx.stack.as_ref()?.overlay.edge_point(edge, ed.t0 + f.u_clamp(fr.u) * (ed.t1 - ed.t0));
+                        [q[0], q[1], z0 + f.u_clamp(fr.v) * (z1 - z0)]
+                    }
+                    crate::complex::FaceGeom::Cap { z, .. } => [
+                        f.bbox.lo[0] + f.u_clamp(fr.u) * (f.bbox.hi[0] - f.bbox.lo[0]),
+                        f.bbox.lo[1] + f.u_clamp(fr.v) * (f.bbox.hi[1] - f.bbox.lo[1]),
+                        z,
+                    ],
+                };
+                Some(cx.facet_project(i, p))
             }
             EntityRef::Vertex(i) => self.complex().vertices.get(i as usize).map(|v| v.p),
             _ => None,
@@ -219,7 +236,89 @@ impl Evaluated {
                 h.u64(e as u64 * 2 + f as u64);
             }
         }
+        for r in &cx.regions {
+            h.u64(r.kind as u64);
+        }
+        if let Some(st) = &cx.stack {
+            h.u64(st.layers.len() as u64).u64(cx.faces.len() as u64);
+            for f in &cx.faces {
+                h.str(&f.name).u64(f.first.map_or(u64::MAX, |x| x as u64)).u64(f.second.map_or(u64::MAX, |x| x as u64));
+                match f.geom {
+                    crate::complex::FaceGeom::Lateral { edge, .. } => h.u64(1).u64(edge as u64),
+                    crate::complex::FaceGeom::Cap { cell, .. } => h.u64(2).u64(cell as u64),
+                };
+                for p in &f.prov {
+                    h.u64(p.feature as u64).str(&p.instance).str(&p.role);
+                }
+            }
+            for l in &st.layers {
+                h.u64(l.region_ids.len() as u64);
+                l.region_of.iter().for_each(|r| {
+                    h.u64(r.map_or(u64::MAX, |x| x as u64));
+                });
+                h.u64(Evaluated::partition_sig(&l.partition));
+            }
+            h.u64(Evaluated::partition_sig(&st.overlay));
+        }
         h.finish()
+    }
+
+    /// Hash of the structure of a 2D partition (used for the layers and the overlay of a stack).
+    fn partition_sig(cx: &crate::complex::Complex) -> u64 {
+        let mut h = Hasher64::new();
+        h.u64(cx.regions.len() as u64).u64(cx.edges.len() as u64).u64(cx.vertices.len() as u64);
+        for e in &cx.edges {
+            h.str(crate::complex::curve_kind(&cx.curves[e.curve as usize])).u64(e.v0 as u64).u64(e.v1 as u64);
+            h.u64(e.left.map_or(u64::MAX, |x| x as u64)).u64(e.right.map_or(u64::MAX, |x| x as u64));
+        }
+        for l in &cx.loops {
+            h.u64(l.region as u64).u64(l.edges.len() as u64);
+        }
+        h.finish()
+    }
+
+    /// Hash of the xy geometry of the overlay of a layer stack (curves and edge ranges): unchanged when only z extents move.
+    pub fn overlay_geometry_hash(&self) -> Option<u64> {
+        let ov = &self.complex.as_ref()?.stack.as_ref()?.overlay;
+        let mut h = Hasher64::new();
+        for e in &ov.edges {
+            ov.curves[e.curve as usize].hash_into(&mut h);
+            h.f64(e.t0).f64(e.t1);
+        }
+        Some(h.finish())
+    }
+}
+
+impl crate::complex::Complex {
+    pub fn discretize_edge(&self, e: u32, o: DiscretizeOpts) -> Vec<(f64, V3)> {
+        let (c, t0, t1) = self.curve_of(e);
+        let sweep = t1 - t0;
+        let len = self.edges[e as usize].length;
+        let mut n = (len / o.max_len).ceil().max(1.0) as usize;
+        match c {
+            Curve::Line { .. } => {}
+            Curve::Circle { r, .. } => {
+                let half = (1.0 - o.max_dev / r).clamp(-1.0, 1.0).acos();
+                n = n
+                    .max((sweep / (2.0 * half).max(1e-3)).ceil() as usize)
+                    .max((sweep / std::f64::consts::FRAC_PI_2).ceil() as usize);
+            }
+            Curve::Ellipse { .. } => n = n.max((sweep / (std::f64::consts::PI / 8.0)).ceil() as usize),
+        }
+        let mut ts: Vec<f64> = (0..=n).map(|k| t0 + sweep * k as f64 / n as f64).collect();
+        if let Curve::Ellipse { .. } = c {
+            // refine where the sampled chord deviation is too large
+            let mut k = 0;
+            while k + 1 < ts.len() && ts.len() < 100_000 {
+                if chord_dev(c, ts[k], ts[k + 1]) > o.max_dev || dist2(c.eval(ts[k]), c.eval(ts[k + 1])) > o.max_len {
+                    ts.insert(k + 1, 0.5 * (ts[k] + ts[k + 1]));
+                } else {
+                    k += 1;
+                }
+            }
+        }
+        let last = ts.len() - 1;
+        ts.iter().enumerate().map(|(i, &t)| (t, to3(c.eval(if i == last { t1 } else { t })))).collect()
     }
 }
 

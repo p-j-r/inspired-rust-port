@@ -34,7 +34,7 @@ impl Node {
     pub fn bbox(&self, prims: &[Arc<Prim>]) -> Aabb {
         match self {
             Node::Empty => Aabb::EMPTY,
-            Node::Prim(i) => prims[*i].bbox,
+            Node::Prim(i) => prims[*i].bbox3(),
             Node::Union(v) => v.iter().fold(Aabb::EMPTY, |a, n| a.union(&n.bbox(prims))),
             Node::Inter(v) => {
                 let mut r: Option<Aabb> = None;
@@ -216,8 +216,8 @@ impl Cache {
 
 impl Scene {
     /// Region index of the point `p` (painter rule: the last region that contains it wins; holes and voids give `None`).
-    pub fn classify(&self, p: V2) -> Option<usize> {
-        let bits: Vec<bool> = self.prims.iter().map(|q| q.sdf_near(p, 0.0) < 0.0).collect();
+    pub fn classify(&self, p: V3) -> Option<usize> {
+        let bits: Vec<bool> = self.prims.iter().map(|q| q.sdf3(p, 0.0) < 0.0).collect();
         self.region_of(&|i| bits[i])
     }
     pub fn region_of(&self, bit: &dyn Fn(usize) -> bool) -> Option<usize> {
@@ -229,8 +229,8 @@ impl Scene {
         None
     }
     /// Smallest distance from `p` to any primitive boundary, capped at `margin`.
-    pub fn sdf_bound(&self, p: V2, margin: f64) -> f64 {
-        self.prims.iter().filter(|q| !q.aux).map(|q| q.sdf_near(p, margin).abs()).fold(margin, f64::min)
+    pub fn sdf_bound(&self, p: V3, margin: f64) -> f64 {
+        self.prims.iter().filter(|q| !q.aux).map(|q| q.sdf3(p, margin).abs()).fold(margin, f64::min)
     }
 }
 
@@ -239,16 +239,14 @@ struct Builder<'a> {
     env: &'a Env,
     cache: &'a mut Cache,
     prims: Vec<Arc<Prim>>,
-    memo: HashMap<(FeatureId, [u64; 6], String), usize>,
+    memo: HashMap<(FeatureId, [u64; 8], String), usize>,
     index: HashMap<FeatureId, usize>,
     depth: usize,
+    /// z interval and naming style while instantiating the profile of an `Extrude`
+    extrude: Option<(f64, f64)>,
 }
 
 const MAX_INSTANCES: f64 = 100_000.0;
-
-fn xf_key(x: &Xf2) -> [u64; 6] {
-    [x.m[0][0], x.m[0][1], x.m[1][0], x.m[1][1], x.t[0], x.t[1]].map(|v| if v == 0.0 { 0 } else { v.to_bits() })
-}
 
 impl Builder<'_> {
     fn ev(&self, e: &crate::expr::Expr, feat: &Feature, what: &str) -> GeomResult<f64> {
@@ -260,52 +258,74 @@ impl Builder<'_> {
     fn ev3(&self, e: &[crate::expr::Expr; 3], f: &Feature, what: &str) -> GeomResult<V3> {
         Ok([self.ev(&e[0], f, what)?, self.ev(&e[1], f, what)?, self.ev(&e[2], f, what)?])
     }
+    fn dim(&self) -> u8 {
+        self.list.dim
+    }
 
-    fn step_xf(&self, s: &TStep, f: &Feature) -> GeomResult<Xf2> {
+    fn step_xf(&self, s: &TStep, f: &Feature) -> GeomResult<Xf3> {
+        let three = self.dim() == 3;
+        let xy = |x: Xf2| Xf3 { xy: x, zs: 1.0, zt: 0.0 };
         Ok(match s {
             TStep::Translate(v) => {
                 let v = self.ev3(v, f, "translation")?;
-                if v[2] != 0.0 {
+                if v[2] != 0.0 && !three {
                     return Err(GeomError(format!("Transform '{}' moves a 2D profile along z", f.name)));
                 }
-                Xf2::translate([v[0], v[1]])
+                Xf3 { xy: Xf2::translate([v[0], v[1]]), zs: 1.0, zt: v[2] }
             }
             TStep::Rotate { axis, deg, about } => {
                 if *axis != Axis::Z {
                     return Err(GeomError(format!(
-                        "Transform '{}' rotates a 2D profile about the {} axis; use z",
+                        "Transform '{}' rotates about the {} axis; only rotations about z are supported (prismatic solids stay prismatic)",
                         f.name,
                         axis.name()
                     )));
                 }
                 let (a, c) = (self.ev(deg, f, "rotation angle")?.to_radians(), self.ev3(about, f, "rotation centre")?);
                 let c = [c[0], c[1]];
-                Xf2::translate(c).after(&Xf2::rotate(a)).after(&Xf2::translate(mul2(c, -1.0)))
+                xy(Xf2::translate(c).after(&Xf2::rotate(a)).after(&Xf2::translate(mul2(c, -1.0))))
             }
             TStep::Mirror { axis, at } => {
-                if *axis == Axis::Z {
-                    return Err(GeomError(format!("Transform '{}' mirrors a 2D profile across a z plane", f.name)));
+                let at = self.ev(at, f, "mirror position")?;
+                match axis {
+                    Axis::Z if three => Xf3 { xy: Xf2::ID, zs: -1.0, zt: 2.0 * at },
+                    Axis::Z => {
+                        return Err(GeomError(format!("Transform '{}' mirrors a 2D profile across a z plane", f.name)))
+                    }
+                    a => xy(Xf2::mirror(a.index(), at)),
                 }
-                Xf2::mirror(axis.index(), self.ev(at, f, "mirror position")?)
             }
             TStep::Scale { factor, about } => {
                 let (s, c) = (self.ev(factor, f, "scale factor")?, self.ev3(about, f, "scale centre")?);
                 if s <= 0.0 {
                     return Err(GeomError(format!("Transform '{}' has scale factor {s}; it must be positive", f.name)));
                 }
-                let c = [c[0], c[1]];
-                Xf2::translate(c).after(&Xf2::scaling(s)).after(&Xf2::translate(mul2(c, -1.0)))
+                let cxy = [c[0], c[1]];
+                Xf3 {
+                    xy: Xf2::translate(cxy).after(&Xf2::scaling(s)).after(&Xf2::translate(mul2(cxy, -1.0))),
+                    zs: s,
+                    zt: c[2] * (1.0 - s),
+                }
             }
         })
     }
 
-    fn leaf(&mut self, f: &Feature, shape: LShape, xf: Xf2, suffix: &str) -> GeomResult<Node> {
-        let key = (f.id, xf_key(&xf), suffix.to_string());
+    fn leaf(
+        &mut self,
+        f: &Feature,
+        shape: LShape,
+        xf: Xf3,
+        suffix: &str,
+        style: Style,
+        zl: (f64, f64),
+    ) -> GeomResult<Node> {
+        let key = (f.id, xf.key(), suffix.to_string());
         if let Some(&i) = self.memo.get(&key) {
             return Ok(Node::Prim(i));
         }
         let name = format!("{}{}", f.name, suffix);
-        let prim = Prim::new(f.id, name, shape, xf, false)?;
+        let z = if self.dim() == 3 { xf.interval(zl) } else { (0.0, 0.0) };
+        let prim = Prim::new_styled(f.id, name, shape, xf.xy, false, style, z)?;
         let prim = match self.cache.prims.get(&prim.key) {
             Some(p) => {
                 self.cache.stats.prims_cached += 1;
@@ -323,7 +343,7 @@ impl Builder<'_> {
         Ok(Node::Prim(self.prims.len() - 1))
     }
 
-    fn inst(&mut self, id: FeatureId, xf: Xf2, suffix: &str) -> GeomResult<Node> {
+    fn inst(&mut self, id: FeatureId, xf: Xf3, suffix: &str) -> GeomResult<Node> {
         let Some(&fi) = self.index.get(&id) else { return Err(GeomError(format!("unknown feature id {id}"))) };
         let list = self.list;
         let f = &list.features[fi];
@@ -339,12 +359,32 @@ impl Builder<'_> {
         r
     }
 
-    fn inst_op(&mut self, f: &Feature, xf: Xf2, suffix: &str) -> GeomResult<Node> {
+    /// A 2D profile leaf: plain in a 2D model, extruded (with a z interval) in a 3D model.
+    fn profile(&mut self, f: &Feature, shape: LShape, xf: Xf3, suffix: &str) -> GeomResult<Node> {
+        match (self.dim(), self.extrude) {
+            (2, _) => self.leaf(f, shape, xf, suffix, Style::Plain, (0.0, 0.0)),
+            (_, Some(z)) => self.leaf(f, shape, xf, suffix, Style::Extrude, z),
+            _ => Err(GeomError(format!(
+                "{} '{}' is a 2D profile: in a 3D model it must be the input of an Extrude",
+                f.op.kind(),
+                f.name
+            ))),
+        }
+    }
+
+    fn inst_op(&mut self, f: &Feature, xf: Xf3, suffix: &str) -> GeomResult<Node> {
         let pos = |what: &str, v: f64| -> GeomResult<f64> {
             if v > 0.0 {
                 Ok(v)
             } else {
                 Err(GeomError(format!("{} '{}' has {what} {v}; it must be positive", f.op.kind(), f.name)))
+            }
+        };
+        let solid_only = |this: &Self| -> GeomResult<()> {
+            if this.dim() == 3 {
+                Ok(())
+            } else {
+                Err(GeomError(format!("{} '{}' is a 3D solid; this is a 2D model", f.op.kind(), f.name)))
             }
         };
         match &f.op {
@@ -369,12 +409,12 @@ impl Builder<'_> {
                 } else {
                     LShape::Rect { lo, hi }
                 };
-                self.leaf(f, shape, xf, suffix)
+                self.profile(f, shape, xf, suffix)
             }
             Op::Circle { center, r } => {
                 let (c, r) = (self.ev2(center, f, "centre")?, self.ev(r, f, "radius")?);
                 pos("radius", r)?;
-                self.leaf(f, LShape::Circle { c, r }, xf, suffix)
+                self.profile(f, LShape::Circle { c, r }, xf, suffix)
             }
             Op::Ellipse { center, radii, angle_deg } => {
                 let (c, ab, ang) =
@@ -382,7 +422,12 @@ impl Builder<'_> {
                 pos("semi-axis", ab[0])?;
                 pos("semi-axis", ab[1])?;
                 let rot = Xf2::translate(c).after(&Xf2::rotate(ang.to_radians()));
-                self.leaf(f, LShape::Ellipse { c: [0.0, 0.0], a: ab[0], b: ab[1] }, xf.after(&rot), suffix)
+                self.profile(
+                    f,
+                    LShape::Ellipse { c: [0.0, 0.0], a: ab[0], b: ab[1] },
+                    Xf3 { xy: xf.xy.after(&rot), ..xf },
+                    suffix,
+                )
             }
             Op::Polygon { pts, names } => {
                 if pts.len() < 3 {
@@ -408,10 +453,49 @@ impl Builder<'_> {
                     return Err(GeomError(format!("Polygon '{}' has zero area", f.name)));
                 }
                 let (pts, names) = ccw_polygon(&p, &nm);
-                self.leaf(f, LShape::Poly { pts, names }, xf, suffix)
+                self.profile(f, LShape::Poly { pts, names }, xf, suffix)
+            }
+            Op::Box { min, max } => {
+                solid_only(self)?;
+                let (a, b) = (self.ev3(min, f, "min corner")?, self.ev3(max, f, "max corner")?);
+                let (lo, hi) = ([a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])]);
+                pos("x extent", hi[0] - lo[0])?;
+                pos("y extent", hi[1] - lo[1])?;
+                pos("z extent", (a[2] - b[2]).abs())?;
+                self.leaf(f, LShape::Rect { lo, hi }, xf, suffix, Style::Box, (a[2].min(b[2]), a[2].max(b[2])))
+            }
+            Op::Cylinder { base, axis, r, h } => {
+                solid_only(self)?;
+                if *axis != Axis::Z {
+                    return Err(GeomError(format!(
+                        "Cylinder '{}' has axis {}; this build supports cylinders along z (the stack direction) only",
+                        f.name,
+                        axis.name()
+                    )));
+                }
+                let (c, r, h) = (self.ev3(base, f, "base")?, self.ev(r, f, "radius")?, self.ev(h, f, "height")?);
+                pos("radius", r)?;
+                pos("height", h.abs())?;
+                self.leaf(
+                    f,
+                    LShape::Circle { c: [c[0], c[1]], r },
+                    xf,
+                    suffix,
+                    Style::Cylinder,
+                    (c[2].min(c[2] + h), c[2].max(c[2] + h)),
+                )
+            }
+            Op::Extrude { profile, z0, z1 } => {
+                solid_only(self)?;
+                let (a, b) = (self.ev(z0, f, "z0")?, self.ev(z1, f, "z1")?);
+                pos("height", (b - a).abs())?;
+                let saved = self.extrude.replace((a.min(b), a.max(b)));
+                let r = self.inst(*profile, xf, suffix);
+                self.extrude = saved;
+                r
             }
             Op::Transform { input, steps } => {
-                let mut t = Xf2::ID;
+                let mut t = Xf3::ID;
                 for s in steps {
                     t = self.step_xf(s, f)?.after(&t);
                 }
@@ -431,21 +515,25 @@ impl Builder<'_> {
                     let t = match kind {
                         PatternKind::Linear { step } => {
                             let s = self.ev3(step, f, "step")?;
-                            Xf2::translate([s[0] * i as f64, s[1] * i as f64])
+                            Xf3 { xy: Xf2::translate([s[0] * i as f64, s[1] * i as f64]), zs: 1.0, zt: s[2] * i as f64 }
                         }
                         PatternKind::Polar { axis, center, total_deg } => {
                             if *axis != Axis::Z {
                                 return Err(GeomError(format!(
-                                    "Pattern '{}' rotates about {}; a 2D pattern must use z",
+                                    "Pattern '{}' rotates about {}; use z",
                                     f.name,
                                     axis.name()
                                 )));
                             }
                             let (c, tot) = (self.ev3(center, f, "centre")?, self.ev(total_deg, f, "angle")?);
                             let c = [c[0], c[1]];
-                            Xf2::translate(c)
-                                .after(&Xf2::rotate((tot * i as f64 / nn as f64).to_radians()))
-                                .after(&Xf2::translate(mul2(c, -1.0)))
+                            Xf3 {
+                                xy: Xf2::translate(c)
+                                    .after(&Xf2::rotate((tot * i as f64 / nn as f64).to_radians()))
+                                    .after(&Xf2::translate(mul2(c, -1.0))),
+                                zs: 1.0,
+                                zt: 0.0,
+                            }
                         }
                     };
                     out.push(self.inst(*input, xf.after(&t), &format!("{suffix}[{i}]"))?);
@@ -477,9 +565,7 @@ impl Builder<'_> {
 /// Builds the scene of a feature list (validates it first).
 pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
     list.validate()?;
-    if list.dim != 2 {
-        return Err(GeomError("this scene builder handles 2D feature lists; 3D lists use scene3".into()));
-    }
+    let dim = list.dim as usize;
     let mut env = Env::default();
     for p in &list.params {
         let v = env.eval(&p.value, &format!("parameter '{}'", p.name))?;
@@ -492,11 +578,11 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
         .ok_or_else(|| GeomError("the model has no Overlay feature; add one that lists the regions".into()))?;
     let Op::Overlay { regions, pins } = &overlay.op else { unreachable!() };
     let index = list.features.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
-    let mut b = Builder { list, env: &env, cache, prims: vec![], memo: HashMap::new(), index, depth: 0 };
+    let mut b = Builder { list, env: &env, cache, prims: vec![], memo: HashMap::new(), index, depth: 0, extrude: None };
     let mut rx: Vec<RegionX> = vec![];
     let mut warnings = vec![];
     for r in regions {
-        let expr = b.inst(r.input, Xf2::ID, "")?;
+        let expr = b.inst(r.input, Xf3::ID, "")?;
         if expr == Node::Empty {
             warnings.push(format!("region '{}' is built from a suppressed or empty feature", r.name));
         }
@@ -510,31 +596,68 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
             pml: None,
         });
     }
-    let mut bounds = Aabb::EMPTY;
-    for p in &b.prims {
-        bounds = bounds.union(&p.bbox);
-    }
-    let diag = bounds.diagonal();
+    let model_box = |prims: &[Arc<Prim>]| prims.iter().filter(|p| !p.aux).fold(Aabb::EMPTY, |a, p| a.union(&p.bbox3()));
+    let diag = model_box(&b.prims).diagonal();
     let mut auto_tags = vec![];
     let after = list.features.iter().position(|f| f.id == overlay.id).unwrap_or(0);
-    // Cut: intersect every region with a half-plane polygon whose edge `cut` lies on the plane
+    let big_z = 4.0 * diag + 1.0;
+    // Cut: intersect every region with a half-space solid whose face `cut` lies on the plane (axis-aligned planes in 3D)
     for f in list.features[after..].iter().filter(|f| !f.suppressed) {
         let Op::Cut { normal, offset, keep } = &f.op else { continue };
         let n = b.ev3(normal, f, "normal")?;
         let off = b.ev(offset, f, "offset")?;
-        let nl = n[0].hypot(n[1]);
-        if nl < 1e-12 || n[2] != 0.0 {
-            return Err(GeomError(format!("Cut '{}' needs a nonzero normal in the xy plane", f.name)));
+        let nl = norm3(n);
+        if nl < 1e-12 {
+            return Err(GeomError(format!("Cut '{}' needs a nonzero normal", f.name)));
         }
-        let (n, off) = ([n[0] / nl, n[1] / nl], off / nl);
-        let (q, d) = (mul2(n, off), perp(n));
-        let big = 4.0 * diag + 4.0 * off.abs() + 1.0;
-        let s = if *keep == Keep::Above { n } else { mul2(n, -1.0) };
-        let (p0, p1) = (sub2(q, mul2(d, big)), add2(q, mul2(d, big)));
-        let pts = vec![p0, p1, add2(p1, mul2(s, big)), add2(p0, mul2(s, big))];
-        let names = vec!["cut".to_string(), "far1".into(), "far2".into(), "far3".into()];
-        let (pts, names) = ccw_polygon(&pts, &names);
-        let prim = Prim::new(f.id, f.name.clone(), LShape::Poly { pts, names }, Xf2::ID, true)?;
+        let (n, off) = (mul3(n, 1.0 / nl), off / nl);
+        let s = if *keep == Keep::Above { 1.0 } else { -1.0 };
+        let (prim, zcut) = if n[2].abs() > 1e-12 {
+            if n[0].abs() > 1e-12 || n[1].abs() > 1e-12 || dim == 2 {
+                return Err(GeomError(format!(
+                    "Cut '{}' is a slanted plane; this build cuts only along axes (a slanted cut needs the general 3D arrangement)",
+                    f.name
+                )));
+            }
+            // z plane: a slab above or below `z = off / n_z`
+            let zc = off / n[2];
+            let keep_up = s * n[2] > 0.0;
+            let (z0, z1) = if keep_up { (zc, zc + big_z) } else { (zc - big_z, zc) };
+            let lo = [scene_lo(&b.prims, 0) - big_z, scene_lo(&b.prims, 1) - big_z];
+            let hi = [lo[0] + 3.0 * big_z + diag, lo[1] + 3.0 * big_z + diag];
+            let mut p =
+                Prim::new_styled(f.id, f.name.clone(), LShape::Rect { lo, hi }, Xf2::ID, true, Style::Box, (z0, z1))?;
+            p.caps = if keep_up {
+                ["cut".to_string(), "top".to_string()]
+            } else {
+                ["bottom".to_string(), "cut".to_string()]
+            };
+            (p, true)
+        } else {
+            let (n2, off2) = ([n[0], n[1]], off);
+            let (q, d) = (mul2(n2, off2), perp(n2));
+            let big = 4.0 * diag + 4.0 * off2.abs() + 1.0;
+            let sv = mul2(n2, s);
+            let (p0, p1) = (sub2(q, mul2(d, big)), add2(q, mul2(d, big)));
+            let pts = vec![p0, p1, add2(p1, mul2(sv, big)), add2(p0, mul2(sv, big))];
+            let names = vec!["cut".to_string(), "far1".into(), "far2".into(), "far3".into()];
+            let (pts, names) = ccw_polygon(&pts, &names);
+            let z = if dim == 3 {
+                (-big_z + scene_lo(&b.prims, 2), big_z + scene_lo(&b.prims, 2) + diag)
+            } else {
+                (0.0, 0.0)
+            };
+            let style = if dim == 3 { Style::Extrude } else { Style::Plain };
+            let mut p = Prim::new_styled(f.id, f.name.clone(), LShape::Poly { pts, names }, Xf2::ID, true, style, z)?;
+            for sg in &mut p.segs {
+                if sg.role == "side:cut" {
+                    sg.role = "cut".to_string();
+                }
+            }
+            (p, false)
+        };
+        let _ = zcut;
+        let role = "cut";
         b.prims.push(Arc::new(prim));
         let h = Node::Prim(b.prims.len() - 1);
         for r in &mut rx {
@@ -542,7 +665,7 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
                 r.expr = Node::Inter(vec![std::mem::replace(&mut r.expr, Node::Empty), h.clone()]);
             }
         }
-        auto_tags.push((f.id, "cut".to_string(), "symmetry".to_string()));
+        auto_tags.push((f.id, role.to_string(), "symmetry".to_string()));
     }
     // Pml: split matching regions into the physical part and one piece per side combination
     for f in list.features[after..].iter().filter(|f| !f.suppressed) {
@@ -552,57 +675,64 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
             return Err(GeomError(format!("Pml '{}' needs thickness > 0, layers >= 1 and grading > 0", f.name)));
         }
         let mark = b.prims.len();
-        let wnode = b.inst(*window, Xf2::ID, "")?;
+        let wnode = b.inst(*window, Xf3::ID, "")?;
         let win = wnode.bbox(&b.prims);
         b.prims.truncate(mark);
         b.memo.retain(|_, v| *v < mark);
         if win.is_empty() {
             return Err(GeomError(format!("Pml '{}' has an empty window", f.name)));
         }
-        let all = [Side::XMin, Side::XMax, Side::YMin, Side::YMax];
-        let sel: Vec<Side> = if sides.is_empty() { all.to_vec() } else { sides.clone() };
-        if sel.iter().any(|s| s.axis() > 1) {
+        let all: Vec<Side> = [Side::XMin, Side::XMax, Side::YMin, Side::YMax, Side::ZMin, Side::ZMax]
+            .into_iter()
+            .take(2 * dim)
+            .collect();
+        let sel: Vec<Side> = if sides.is_empty() { all.clone() } else { sides.clone() };
+        if sel.iter().any(|s| s.axis() >= dim) {
             return Err(GeomError(format!("Pml '{}' lists a z side in a 2D model", f.name)));
         }
-        // side combinations: single sides first, then corners; deterministic order
-        let mut combos: Vec<[i8; 2]> = vec![];
-        for s in all {
-            if sel.contains(&s) {
-                let mut c = [0i8; 2];
-                c[s.axis()] = s.sign();
+        // side combinations: fewer sides first (faces, then edges, then corners); deterministic order
+        let mut combos: Vec<[i8; 3]> = vec![];
+        let total = 3usize.pow(dim as u32);
+        for code in 0..total {
+            let mut c = [0i8; 3];
+            let mut k = code;
+            for ci in c.iter_mut().take(dim) {
+                *ci = (k % 3) as i8 - 1;
+                k /= 3;
+            }
+            let ok = c != [0, 0, 0]
+                && (0..dim).all(|a| c[a] == 0 || sel.contains(&if c[a] < 0 { all[2 * a] } else { all[2 * a + 1] }));
+            if ok {
                 combos.push(c);
             }
         }
-        for sy in [-1i8, 1] {
-            for sx in [-1i8, 1] {
-                let (xs, ys) =
-                    (if sx < 0 { Side::XMin } else { Side::XMax }, if sy < 0 { Side::YMin } else { Side::YMax });
-                if sel.contains(&xs) && sel.contains(&ys) {
-                    combos.push([sx, sy]);
-                }
-            }
-        }
-        let mut pieces: Vec<(Node, [i8; 2], String)> = vec![];
+        combos.sort_by_key(|c| {
+            let n = c.iter().filter(|&&x| x != 0).count();
+            let single = (0..dim).find(|&a| c[a] != 0).map_or(0, |a| 2 * a + (c[a] > 0) as usize);
+            (n, if n == 1 { single } else { 0 }, (0..dim).rev().map(|a| c[a] + 1).collect::<Vec<_>>())
+        });
+        let mut pieces: Vec<(Node, [i8; 3], String)> = vec![];
         for c in &combos {
             let rng = |k: usize| match c[k] {
                 -1 => (win.lo[k] - t, win.lo[k]),
                 0 => (win.lo[k], win.hi[k]),
                 _ => (win.hi[k], win.hi[k] + t),
             };
-            let (x, y) = (rng(0), rng(1));
-            let piece = [(-1, "xmin"), (1, "xmax")]
-                .iter()
-                .filter(|(s, _)| c[0] == *s)
-                .map(|p| p.1)
-                .chain([(-1, "ymin"), (1, "ymax")].iter().filter(|(s, _)| c[1] == *s).map(|p| p.1))
+            let piece = (0..dim)
+                .filter(|&a| c[a] != 0)
+                .map(|a| format!("{}{}", ["x", "y", "z"][a], if c[a] < 0 { "min" } else { "max" }))
                 .collect::<Vec<_>>()
                 .join("_");
-            let prim = Prim::new(
+            let (x, y) = (rng(0), rng(1));
+            let (style, z) = if dim == 3 { (Style::Box, rng(2)) } else { (Style::Plain, (0.0, 0.0)) };
+            let prim = Prim::new_styled(
                 f.id,
                 format!("{}[{piece}]", f.name),
                 LShape::Rect { lo: [x.0, y.0], hi: [x.1, y.1] },
                 Xf2::ID,
                 true,
+                style,
+                z,
             )?;
             b.prims.push(Arc::new(prim));
             pieces.push((Node::Prim(b.prims.len() - 1), *c, piece));
@@ -634,14 +764,7 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
                     pinned_id: None,
                     expr: Node::Inter(vec![r.expr.clone(), node.clone()]),
                     parent: Some(r.name.clone()),
-                    pml: Some(PmlInfo {
-                        feature: f.id,
-                        sides: [c[0], c[1], 0],
-                        window: win,
-                        thickness: t,
-                        layers: nl,
-                        grading: gr,
-                    }),
+                    pml: Some(PmlInfo { feature: f.id, sides: *c, window: win, thickness: t, layers: nl, grading: gr }),
                 });
             }
         }
@@ -672,9 +795,16 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
         r.expr.remap(&map);
     }
     let prims = kept;
-    let mut bounds = Aabb::EMPTY;
-    for p in prims.iter().filter(|p| !p.aux) {
-        bounds = bounds.union(&p.bbox);
+    let bounds = model_box(&prims);
+    Ok(Scene { dim: list.dim, env, prims, regions: rx, pins: pins.clone(), bounds, warnings, auto_tags })
+}
+
+/// Lower corner of the non-auxiliary primitives along an axis.
+fn scene_lo(prims: &[Arc<Prim>], axis: usize) -> f64 {
+    let m = prims.iter().filter(|p| !p.aux).fold(Aabb::EMPTY, |a, p| a.union(&p.bbox3()));
+    if m.is_empty() {
+        0.0
+    } else {
+        m.lo[axis]
     }
-    Ok(Scene { dim: 2, env, prims, regions: rx, pins: pins.clone(), bounds, warnings, auto_tags })
 }

@@ -266,7 +266,7 @@ fn fractions_round_trip_and_move_continuously() {
 
 #[test]
 fn to_rust_round_trips_as_data() {
-    for g in common::all_2d() {
+    for g in common::all_models() {
         let code = g.model.list.to_rust();
         let back = common::interp::build(&code);
         assert_eq!(back.list, g.model.list, "{}\n{code}", g.name);

@@ -255,3 +255,94 @@ pub fn all_2d() -> Vec<Golden> {
     v.extend([bragg_section(), plate_with_hole(), disk(), annulus(), concentric_discs()]);
     v
 }
+
+/// One period of a Bragg grating in a 300 nm SOI wire (`usecases/bragg.rs`): two layers along z (teeth present, teeth absent),
+/// a Floquet pair on the end faces. `left`/`right` say which sides carry teeth.
+pub fn bragg3(name: &'static str, left: bool, right: bool) -> Golden {
+    let mut m = Model::new_3d();
+    m.param("w", 500e-9)
+        .param("t", 300e-9)
+        .param("period", 280e-9)
+        .param("duty", 0.5)
+        .param("tooth", 80e-9)
+        .param("margin", 0.45e-6)
+        .param("box_t", 2e-6);
+    m.param("x", "w/2+tooth+margin");
+    let clad = m.box_("clad", ("-x", "-box_t", 0.0), ("x", "t+margin", "period"));
+    let bx = m.box_("box", ("-x", "-box_t", 0.0), ("x", 0.0, "period"));
+    let core = m.box_("core", ("-w/2", 0.0, 0.0), ("w/2", "t", "period"));
+    let mut regs = vec![def("clad", clad, Some(3)), def("BOX", bx, Some(1)), def("Si", core, Some(2))];
+    if left {
+        let lt = m.box_("left_tooth", ("-w/2-tooth", 0.0, 0.0), ("-w/2", "t", "duty*period"));
+        regs.push(def("left_tooth", lt, Some(4)));
+    }
+    if right {
+        let rt = m.box_("right_tooth", ("w/2", 0.0, 0.0), ("w/2+tooth", "t", "duty*period"));
+        regs.push(def("right_tooth", rt, Some(5)));
+    }
+    m.overlay_defs(regs, vec![]);
+    m.periodic(
+        "floquet",
+        geom::select::Selector::parse("plane(z = 0)").unwrap(),
+        geom::select::Selector::parse("plane(z = period)").unwrap(),
+        (0.0, 0.0, "period"),
+    );
+    let (w, t, p, d, tooth, mg, bt) = (500e-9, 300e-9, 280e-9, 0.5, 80e-9, 0.45e-6, 2e-6);
+    let teeth = (left as u8 + right as u8) as f64;
+    let wide = w + 2.0 * (tooth + mg);
+    let mut regions = vec![
+        ("clad", wide * (bt + t + mg) * p - wide * bt * p - w * t * p - teeth * tooth * t * d * p),
+        ("BOX", wide * bt * p),
+        ("Si", w * t * p),
+    ];
+    if left {
+        regions.push(("left_tooth", tooth * t * d * p));
+    }
+    if right {
+        regions.push(("right_tooth", tooth * t * d * p));
+    }
+    let mut e =
+        exp("one Bragg period: layers with and without teeth, identical end faces, Floquet pair", &regions, &[]);
+    e.names = vec![];
+    Golden { name, model: m, expected: e }
+}
+
+/// Cylindrical cavity through a block (3D plate with a hole; volume pi r^2 h removed).
+pub fn cylinder_cavity() -> Golden {
+    let mut m = Model::new_3d();
+    let b = m.box_("block", (0.0, 0.0, 0.0), (2.0, 2.0, 1.0));
+    let c = m.cylinder("cav", (1.0, 1.0, -1.0), 0.3, 3.0);
+    let d = m.difference("d", b, &[c]);
+    m.overlay(&[("block", d)]);
+    let mut e = exp("block with a through cylinder cavity", &[("block", 4.0 - PI * 0.09)], &[]);
+    e.names = vec![];
+    Golden { name: "cylinder_cavity", model: m, expected: e }
+}
+
+/// Concentric cylinders of length 2 (coax: capacitance per length from the closed form).
+pub fn concentric_cylinders() -> Golden {
+    let mut m = Model::new_3d();
+    let o = m.cylinder("outer", (0.0, 0.0, 0.0), 0.5, 2.0);
+    let i = m.cylinder("inner", (0.0, 0.0, 0.0), 0.2, 2.0);
+    m.overlay(&[("dielectric", o), ("conductor", i)]);
+    let mut e =
+        exp("concentric cylinders", &[("dielectric", PI * (0.25 - 0.04) * 2.0), ("conductor", PI * 0.04 * 2.0)], &[]);
+    e.names = vec![];
+    Golden { name: "concentric_cylinders", model: m, expected: e }
+}
+
+pub fn all_3d() -> Vec<Golden> {
+    vec![
+        bragg3("bragg_symmetric", true, true),
+        bragg3("bragg_asymmetric", true, false),
+        bragg3("bragg_uniform", false, false),
+        cylinder_cavity(),
+        concentric_cylinders(),
+    ]
+}
+
+pub fn all_models() -> Vec<Golden> {
+    let mut v = all_2d();
+    v.extend(all_3d());
+    v
+}

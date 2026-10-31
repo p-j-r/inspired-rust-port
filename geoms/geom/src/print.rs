@@ -46,6 +46,9 @@ pub fn to_rust(l: &FeatureList) -> String {
             Op::Rect { min, max } => format!("m.rect({n}, {}, {})", t2(min), t2(max)),
             Op::RoundedRect { min, max, r } => format!("m.rounded_rect({n}, {}, {}, {})", t2(min), t2(max), e(r)),
             Op::Circle { center, r } => format!("m.circle({n}, {}, {})", t2(center), e(r)),
+            Op::Box { min, max } => format!("m.box_({n}, {}, {})", t3(min), t3(max)),
+            Op::Cylinder { base, axis: Axis::Z, r, h } => format!("m.cylinder({n}, {}, {}, {})", t3(base), e(r), e(h)),
+            Op::Extrude { profile, z0, z1 } => format!("m.extrude({n}, f{profile}, {}, {})", e(z0), e(z1)),
             Op::Ellipse { center, radii, angle_deg } => {
                 format!("m.ellipse({n}, {}, {}, {})", t2(center), t2(radii), e(angle_deg))
             }

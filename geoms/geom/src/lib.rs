@@ -15,5 +15,6 @@ pub mod query;
 pub mod scene;
 pub mod select;
 pub mod sim;
+pub mod stack;
 pub mod tess;
 pub use error::{GeomError, GeomResult};

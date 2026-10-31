@@ -64,6 +64,8 @@ pub fn diff(old: &Evaluated, new: &Evaluated) -> ChangeReport {
         ChangeKind::Remesh
     } else if changed.is_empty() {
         ChangeKind::None
+    } else if old.overlay_geometry_hash().is_some() && old.overlay_geometry_hash() == new.overlay_geometry_hash() {
+        ChangeKind::ZOnly
     } else {
         ChangeKind::Morph
     };

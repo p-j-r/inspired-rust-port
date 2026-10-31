@@ -57,9 +57,13 @@ impl Evaluator {
             bounds,
         };
         if tier >= Tier::Complex {
-            let cx = arrange(&scene, &mut self.cache)?;
+            let cx = if list.dim == 3 {
+                crate::stack::build(&scene, &mut self.cache)?
+            } else {
+                arrange(&scene, &mut self.cache)?
+            };
             for r in &cx.regions {
-                if r.loops.is_empty() {
+                if r.measure <= 0.0 {
                     warnings.push(format!(
                         "region '{}' is empty: nothing of it is left after the other regions are painted over it",
                         r.name
@@ -100,6 +104,13 @@ impl Evaluated {
     pub fn vertices(&self) -> &[crate::complex::Vertex] {
         &self.complex().vertices
     }
+    /// The layer stack of a 3D model (the overlay is the common refinement of all layers).
+    pub fn layer_stack(&self) -> Option<&crate::stack::LayerStack> {
+        self.complex.as_ref()?.stack.as_deref()
+    }
+    pub fn faces(&self) -> &[crate::complex::Face] {
+        &self.complex().faces
+    }
     pub fn complex(&self) -> &Complex {
         self.complex.as_ref().expect("this evaluation did not reach the Complex tier")
     }
@@ -109,7 +120,7 @@ impl Evaluated {
     /// Region id containing `p` (painter rule), without building the arrangement.
     pub fn classify(&self, p: V3) -> Option<u32> {
         let s = self.scene();
-        let i = s.classify([p[0], p[1]])?;
+        let i = s.classify(p)?;
         match &self.complex {
             Some(c) => c.scene_to_region[i],
             None => Some(i as u32),
@@ -117,7 +128,7 @@ impl Evaluated {
     }
     /// Distance from `p` to the nearest primitive boundary, at most `margin`.
     pub fn sdf_bound(&self, p: V3, margin: f64) -> f64 {
-        self.scene().sdf_bound([p[0], p[1]], margin)
+        self.scene().sdf_bound(p, margin)
     }
     pub fn tol(&self) -> f64 {
         1e-9 * self.bounds.diagonal()

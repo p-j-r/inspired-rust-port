@@ -1,0 +1,266 @@
+//! 3D prismatic models: volumes, named faces, closure, layer stacks, periodic pairs, Pml and Cut in 3D, refusals.
+
+use geom::diff::{diff, ChangeKind};
+use geom::eval::{Evaluator, Tier};
+use geom::model::*;
+use geom::select::Selector;
+use geom::sim::EntityRef;
+use std::f64::consts::PI;
+
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-12 * a.abs().max(b.abs())
+}
+
+#[test]
+fn box_with_a_through_cylinder_cavity() {
+    let mut m = Model::new_3d();
+    let b = m.box_("block", (0.0, 0.0, 0.0), (2.0, 2.0, 1.0));
+    let c = m.cylinder("cav", (1.0, 1.0, -1.0), 0.3, 3.0);
+    let d = m.difference("d", b, &[c]);
+    m.overlay(&[("block", d)]);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert!(close(ev.volume(0), 4.0 - PI * 0.09));
+    let mut names: Vec<&str> = ev.faces().iter().map(|f| f.name.as_str()).collect();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names, ["block.xmax", "block.xmin", "block.ymax", "block.ymin", "block.zmax", "block.zmin", "cav.side"]);
+    let area: f64 = ev.faces().iter().map(|f| f.area).sum();
+    assert!(close(area, 2.0 * (4.0 - PI * 0.09) + 8.0 + 2.0 * PI * 0.3));
+    // selectors work on faces
+    let side = ev.resolve(&Selector::parse("name(cav.side)").unwrap()).unwrap();
+    assert_eq!(side.set.kind, geom::select::EntityKind::Faces);
+    assert_eq!(ev.resolve(&Selector::parse("kind(cylinder)").unwrap()).unwrap().set, side.set);
+    assert_eq!(ev.resolve(&Selector::parse("radius(0.3)").unwrap()).unwrap().set, side.set);
+    assert_eq!(ev.resolve(&Selector::parse("outer & extreme(+z)").unwrap()).unwrap().set.ids.len(), 1);
+    assert_eq!(ev.resolve(&Selector::parse("plane(z = 0)").unwrap()).unwrap().set.ids.len(), 1);
+    // classification and the projection oracle
+    assert_eq!(ev.classify([0.2, 0.2, 0.5]), Some(0));
+    assert_eq!(ev.classify([1.0, 1.0, 0.5]), None);
+    let f = side.set.ids[0];
+    let q = ev.oracle().project([2.0, 1.0, 0.4], EntityRef::Face(f)).unwrap();
+    assert!((q[0] - 1.3).abs() < 1e-12 && (q[1] - 1.0).abs() < 1e-12 && (q[2] - 0.4).abs() < 1e-12);
+    let lm = ev.label_map().unwrap();
+    assert_eq!(lm.boundary("cav.side").len(), 1);
+}
+
+fn bragg(duty: f64, tooth: f64) -> Model {
+    let mut m = Model::new_3d();
+    m.param("w", 500e-9)
+        .param("t", 300e-9)
+        .param("period", 300e-9)
+        .param("duty", duty)
+        .param("tooth", tooth)
+        .param("margin", 0.45e-6)
+        .param("box_t", 2e-6);
+    let e = "(tooth+margin)";
+    let clad = m.box_(
+        "clad",
+        (format!("-w/2-{e}").as_str(), "-box_t", 0.0),
+        (format!("w/2+{e}").as_str(), "t+margin", "period"),
+    );
+    let bx = m.box_("box", (format!("-w/2-{e}").as_str(), "-box_t", 0.0), (format!("w/2+{e}").as_str(), 0.0, "period"));
+    let core = m.box_("core", ("-w/2", 0.0, 0.0), ("w/2", "t", "period"));
+    let lt = m.box_("left_tooth", ("-w/2-tooth", 0.0, 0.0), ("-w/2", "t", "duty*period"));
+    let rt = m.box_("right_tooth", ("w/2", 0.0, 0.0), ("w/2+tooth", "t", "duty*period"));
+    m.overlay_defs(
+        vec![
+            RegionDef { name: "clad".into(), input: clad, kind: RegionKind::Material, pinned_id: Some(3) },
+            RegionDef { name: "BOX".into(), input: bx, kind: RegionKind::Material, pinned_id: Some(1) },
+            RegionDef { name: "Si".into(), input: core, kind: RegionKind::Material, pinned_id: Some(2) },
+            RegionDef { name: "left_tooth".into(), input: lt, kind: RegionKind::Material, pinned_id: Some(4) },
+            RegionDef { name: "right_tooth".into(), input: rt, kind: RegionKind::Material, pinned_id: Some(5) },
+        ],
+        vec![],
+    );
+    m.periodic(
+        "floquet",
+        Selector::parse("plane(z = 0)").unwrap(),
+        Selector::parse("plane(z = period)").unwrap(),
+        (0.0, 0.0, "period"),
+    );
+    m
+}
+
+#[test]
+fn bragg_cell_is_a_layer_stack_with_periodic_ends() {
+    let m = bragg(0.5, 80e-9);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    let (w, t, p, d, tooth, mg, bt) = (500e-9, 300e-9, 300e-9, 0.5, 80e-9, 0.45e-6, 2e-6);
+    let wide = w + 2.0 * (tooth + mg);
+    let vol = |n: &str| ev.volume(ev.regions().iter().position(|r| r.name == n).unwrap() as u32);
+    assert!(close(vol("Si"), w * t * p));
+    assert!(close(vol("left_tooth"), tooth * t * d * p) && close(vol("right_tooth"), tooth * t * d * p));
+    assert!(close(vol("BOX"), wide * bt * p));
+    assert!(close(vol("clad"), wide * (bt + t + mg) * p - wide * bt * p - w * t * p - 2.0 * tooth * t * d * p));
+    let st = ev.layer_stack().expect("a stack");
+    assert_eq!(st.layers.len(), 2);
+    assert!(close(st.layers[0].z1, d * p) && close(st.layers[1].z1, p));
+    // the overlay is the common refinement: it has the tooth cells even though the second layer has none
+    assert!(st.overlay.regions.len() > ev.regions().len() - 2);
+    for l in &st.layers {
+        assert_eq!(l.region_of.len(), st.overlay.regions.len());
+    }
+    // identical end faces: one Periodic pair, verified congruent
+    let pp = &ev.periodic_pairs()[0];
+    assert!(pp.checked_congruent && !pp.a.ids.is_empty() && pp.a.ids.len() == pp.b.ids.len());
+    // the tooth tops are named after the tooth; the interface between a tooth and the cladding above it is `clad|left_tooth`
+    let names: Vec<&str> = ev.faces().iter().map(|f| f.name.as_str()).collect();
+    assert!(names.contains(&"left_tooth|clad") || names.contains(&"clad|left_tooth"), "{names:?}");
+    assert!(names.contains(&"clad.xmin") && names.contains(&"box.zmin") && names.contains(&"clad.zmax"));
+    // an unequal tooth makes the same topology: ids stay put while the geometry moves
+    let mut e = Evaluator::new();
+    let a = e.eval(&m.list, Tier::Complex).unwrap();
+    let b = e.eval(&m.list.with(&[("tooth", 90e-9)]), Tier::Complex).unwrap();
+    assert_eq!(a.topology_signature(), b.topology_signature());
+    assert_eq!(
+        a.faces().iter().map(|f| &f.name).collect::<Vec<_>>(),
+        b.faces().iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+    assert_eq!(diff(&a, &b).kind, ChangeKind::Morph);
+    // z-only change: the duty cycle moves the layer boundary, the overlay stays
+    let c = e.eval(&m.list.with(&[("duty", 0.4)]), Tier::Complex).unwrap();
+    assert_eq!(diff(&a, &c).kind, ChangeKind::ZOnly);
+    // removing the teeth changes the topology
+    let mut no_teeth = m.list.clone();
+    for f in &mut no_teeth.features {
+        if f.name.ends_with("_tooth") {
+            f.suppressed = true;
+        }
+    }
+    let nt = e.eval(&no_teeth, Tier::Complex).unwrap();
+    assert_eq!(diff(&a, &nt).kind, ChangeKind::Remesh);
+    assert_eq!(nt.layer_stack().unwrap().layers.len(), 1);
+}
+
+#[test]
+fn a_wrong_periodic_translation_is_refused() {
+    let mut m = bragg(0.5, 80e-9);
+    for f in &mut m.list.features {
+        if let Op::Periodic { translation, .. } = &mut f.op {
+            translation[2] = geom::expr::Expr::Num(250e-9);
+        }
+    }
+    assert!(m.eval(Tier::Complex).err().unwrap().0.contains("Periodic 'floquet'"));
+}
+
+#[test]
+fn extruded_profiles_pml_and_cuts_in_3d() {
+    // a rounded plate extruded 1 high, mirror-cut in x, with PML on the z sides of a window
+    let mut m = Model::new_3d();
+    let p = m.rounded_rect("outline", (-2.0, -1.0), (2.0, 1.0), 0.5);
+    let slab = m.extrude("slab", p, 0.0, 1.0);
+    let win = m.box_("window", (-2.0, -1.0, 0.0), (2.0, 1.0, 1.0));
+    m.overlay(&[("slab", slab)]);
+    m.pml("pml", win, &[Side::ZMin, Side::ZMax], 0.5, 4.0, 2.0);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert!(close(ev.volume(0), (8.0 - (4.0 - PI) * 0.25) * 1.0));
+    // the slab only exists inside the window, so no pad overlaps it: no pml pieces appear
+    assert_eq!(ev.regions().len(), 1);
+    let mut m = Model::new_3d();
+    let a = m.box_("a", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    m.overlay(&[("a", a)]);
+    m.cut("sym", (1.0, 0.0, 0.0), 0.5, Keep::Below);
+    m.cut("floor", (0.0, 0.0, 1.0), 0.25, Keep::Above);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert!(close(ev.volume(0), 0.5 * 1.0 * 0.75));
+    assert!(ev.faces().iter().any(|f| f.name == "sym.cut") && ev.faces().iter().any(|f| f.name == "floor.cut"));
+    assert_eq!(ev.resolve(&Selector::Tag("symmetry".into())).unwrap().set.ids.len(), 2);
+    // slanted cut: refused with an explanation
+    let mut m = Model::new_3d();
+    let a = m.box_("a", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    m.overlay(&[("a", a)]);
+    m.cut("slant", (1.0, 0.0, 1.0), 1.0, Keep::Below);
+    assert!(m.eval(Tier::Complex).err().unwrap().0.contains("slanted"));
+    // PML on all sides of a window around a box: pieces appear for the regions that reach the pad
+    let mut m = Model::new_3d();
+    let big = m.box_("big", (-1.0, -1.0, -1.0), (2.0, 2.0, 2.0));
+    let win = m.box_("window", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    m.overlay(&[("air", big)]);
+    m.pml("pml", win, &[], 1.0, 4.0, 2.0);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert_eq!(ev.regions().len(), 27); // the physical core and 26 pad pieces
+    assert_eq!(ev.pml_regions().len(), 26);
+    assert!(close(ev.regions().iter().map(|r| r.measure).sum::<f64>(), 27.0));
+    let corner = ev.pml_regions().iter().find(|p| p.sides == [1, 1, 1]).unwrap();
+    assert_eq!(ev.regions()[corner.region as usize].name, "air.pml_xmax_ymax_zmax");
+}
+
+#[test]
+fn three_d_errors_are_plain() {
+    let mut m = Model::new_3d();
+    let r = m.rect("flat", (0.0, 0.0), (1.0, 1.0));
+    m.overlay(&[("r", r)]);
+    assert!(m.eval(Tier::Complex).err().unwrap().0.contains("must be the input of an Extrude"));
+    let mut m = Model::new_2d();
+    let b = m.box_("b", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    m.overlay(&[("b", b)]);
+    assert!(m.eval(Tier::Complex).err().unwrap().0.contains("3D solid"));
+    let mut m = Model::new_3d();
+    let a = m.box_("a", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    let b = m.box_("b", (0.0, 0.0, 1.0 + 3e-8), (1.0, 1.0, 2.0)); // z levels 3e-8 apart: undecidable
+    m.overlay(&[("a", a), ("b", b)]);
+    assert!(m.eval(Tier::Complex).err().unwrap().0.contains("z levels"));
+}
+
+#[test]
+fn faces_round_trip_through_fractions() {
+    let m = bragg(0.5, 80e-9);
+    let ev = m.eval(Tier::Complex).unwrap();
+    let l = ev.bounds().diagonal();
+    for (i, f) in ev.faces().iter().enumerate() {
+        for (u, v) in [(0.0, 0.0), (0.3, 0.7), (1.0, 1.0), (0.5, 0.5)] {
+            let p = ev.position_at(EntityRef::Face(i as u32), geom::query::Fractions { u, v }).unwrap();
+            let g = ev.fractions_of(EntityRef::Face(i as u32), p).unwrap();
+            let q = ev.position_at(EntityRef::Face(i as u32), g).unwrap();
+            let d = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt();
+            assert!(d <= 1e-12 * l, "{} at ({u},{v}): {d}", f.name);
+        }
+    }
+}
+
+#[test]
+fn tessellation_and_stuffing_surfaces() {
+    let m = bragg(0.5, 80e-9);
+    let ev = m.eval(Tier::Display).unwrap();
+    let mesh = ev.tessellate(1e-9);
+    // triangle area per face matches the analytic face area (all faces here are planar)
+    let mut by = vec![0.0; ev.faces().len()];
+    for (t, &f) in mesh.tris.iter().zip(&mesh.tri_face) {
+        let p = |i: u32| mesh.points[i as usize];
+        let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+        let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let cr = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        by[f as usize] += 0.5 * (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt();
+    }
+    for (f, a) in ev.faces().iter().zip(by) {
+        assert!((a - f.area).abs() <= 1e-9 * f.area, "{}: {a} vs {}", f.name, f.area);
+    }
+    // surfaces: every face is on exactly one surface, coincident faces share it, and the extent covers the faces
+    let ss = ev.surfaces_for_stuffing();
+    let total: usize = ss.iter().map(|s| s.faces.len()).sum();
+    assert_eq!(total, ev.faces().len());
+    assert!(ss.len() < ev.faces().len());
+    for s in &ss {
+        for &f in &s.faces {
+            let b = ev.faces()[f as usize].bbox;
+            assert!((0..3).all(|k| s.face_aabb.lo[k] <= b.lo[k] && s.face_aabb.hi[k] >= b.hi[k]));
+        }
+    }
+    // a cylinder cavity gives a cylinder surface
+    let mut m = Model::new_3d();
+    let b = m.box_("block", (0.0, 0.0, 0.0), (2.0, 2.0, 1.0));
+    let c = m.cylinder("cav", (1.0, 1.0, -1.0), 0.3, 3.0);
+    let d = m.difference("d", b, &[c]);
+    m.overlay(&[("block", d)]);
+    let ev = m.eval(Tier::Complex).unwrap();
+    assert!(ev
+        .surfaces_for_stuffing()
+        .iter()
+        .any(|s| matches!(s.surface, geom::stack::Surface::Cylinder { r, .. } if (r - 0.3).abs() < 1e-15)));
+}

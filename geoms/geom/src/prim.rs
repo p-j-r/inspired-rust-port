@@ -46,8 +46,21 @@ pub struct DSeg {
     pub role: String,
 }
 
+/// How the boundary pieces are named in 3D: a rectangle read as a box, a circle read as a cylinder, any profile extruded, or plain 2D.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Style {
+    Plain,
+    Box,
+    Cylinder,
+    Extrude,
+}
+
 #[derive(Clone, Debug)]
 pub struct Prim {
+    /// z interval of the solid (a prism over this profile); `(0, 0)` for 2D models
+    pub z: (f64, f64),
+    /// roles of the bottom and top faces
+    pub caps: [String; 2],
     pub feature: u32,
     /// instance name: feature name plus pattern indices (`hole[3]`)
     pub name: String,
@@ -201,6 +214,18 @@ impl DGeom {
 
 impl Prim {
     pub fn new(feature: u32, name: String, shape: LShape, xf: Xf2, aux: bool) -> GeomResult<Prim> {
+        Prim::new_styled(feature, name, shape, xf, aux, Style::Plain, (0.0, 0.0))
+    }
+
+    pub fn new_styled(
+        feature: u32,
+        name: String,
+        shape: LShape,
+        xf: Xf2,
+        aux: bool,
+        style: Style,
+        z: (f64, f64),
+    ) -> GeomResult<Prim> {
         let mut segs: Vec<DSeg> =
             shape.local_segs().into_iter().map(|(g, role)| DSeg { geom: g.map(&xf), role }).collect();
         if xf.mirrored() {
@@ -212,6 +237,25 @@ impl Prim {
             }
             segs.reverse();
         }
+        for s in &mut segs {
+            s.role = match style {
+                Style::Plain => continue,
+                Style::Extrude => format!("side:{}", s.role),
+                Style::Cylinder => "side".to_string(),
+                Style::Box => match s.role.as_str() {
+                    "left" => "xmin",
+                    "right" => "xmax",
+                    "bottom" => "ymin",
+                    _ => "ymax",
+                }
+                .to_string(),
+            };
+        }
+        let caps = if style == Style::Box {
+            ["zmin".to_string(), "zmax".to_string()]
+        } else {
+            ["bottom".to_string(), "top".to_string()]
+        };
         let mut bbox = Aabb::EMPTY;
         for s in &segs {
             let (c, a, b) = s.geom.curve_range();
@@ -219,7 +263,10 @@ impl Prim {
         }
         let mut h = Hasher64::new();
         shape.hash(&mut h);
-        h.f64(xf.m[0][0])
+        h.u64(style as u64)
+            .f64(z.0)
+            .f64(z.1)
+            .f64(xf.m[0][0])
             .f64(xf.m[0][1])
             .f64(xf.m[1][0])
             .f64(xf.m[1][1])
@@ -228,7 +275,26 @@ impl Prim {
             .str(&name)
             .u64(aux as u64)
             .u64(feature as u64);
-        Ok(Prim { feature, name, shape, xf, segs, bbox, aux, key: h.finish() })
+        Ok(Prim { z, caps, feature, name, shape, xf, segs, bbox, aux, key: h.finish() })
+    }
+
+    /// Bounding box including the z interval.
+    pub fn bbox3(&self) -> Aabb {
+        Aabb { lo: [self.bbox.lo[0], self.bbox.lo[1], self.z.0], hi: [self.bbox.hi[0], self.bbox.hi[1], self.z.1] }
+    }
+
+    /// Signed distance estimate of the prism in 3D (negative inside).
+    pub fn sdf3(&self, p: V3, reach: f64) -> f64 {
+        let dxy = self.sdf_near([p[0], p[1]], reach);
+        if self.z.0 == self.z.1 {
+            return dxy;
+        }
+        let dz = (self.z.0 - p[2]).max(p[2] - self.z.1);
+        if dxy > 0.0 || dz > 0.0 {
+            dxy.max(0.0).hypot(dz.max(0.0))
+        } else {
+            dxy.max(dz)
+        }
     }
 
     /// Signed distance estimate in world units (negative inside); exact for polygons, rectangles and circles.

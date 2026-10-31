@@ -155,6 +155,24 @@ pub enum Op {
         max: [Expr; 2],
         r: Expr,
     },
+    /// 3D: axis-aligned box (roles `xmin xmax ymin ymax zmin zmax`)
+    Box {
+        min: [Expr; 3],
+        max: [Expr; 3],
+    },
+    /// 3D: cylinder from `base` along +axis (this build: axis z only); roles `side bottom top`
+    Cylinder {
+        base: [Expr; 3],
+        axis: Axis,
+        r: Expr,
+        h: Expr,
+    },
+    /// 3D: a 2D profile feature swept along z from `z0` to `z1`; roles `side:<profile role>`, `bottom`, `top`
+    Extrude {
+        profile: FeatureId,
+        z0: Expr,
+        z1: Expr,
+    },
     Transform {
         input: FeatureId,
         steps: Vec<TStep>,
@@ -220,6 +238,9 @@ impl Op {
             Op::Ellipse { .. } => "Ellipse",
             Op::Polygon { .. } => "Polygon",
             Op::RoundedRect { .. } => "RoundedRect",
+            Op::Box { .. } => "Box",
+            Op::Cylinder { .. } => "Cylinder",
+            Op::Extrude { .. } => "Extrude",
             Op::Transform { .. } => "Transform",
             Op::Pattern { .. } => "Pattern",
             Op::Union { .. } => "Union",
@@ -240,6 +261,9 @@ impl Op {
             Op::Rect { min, max } => min.iter().chain(max).collect(),
             Op::RoundedRect { min, max, r } => min.iter().chain(max).chain([r]).collect(),
             Op::Circle { center, r } => center.iter().chain([r]).collect(),
+            Op::Box { min, max } => min.iter().chain(max).collect(),
+            Op::Cylinder { base, r, h, .. } => base.iter().chain([r, h]).collect(),
+            Op::Extrude { z0, z1, .. } => vec![z0, z1],
             Op::Ellipse { center, radii, angle_deg } => center.iter().chain(radii).chain([angle_deg]).collect(),
             Op::Polygon { pts, .. } => pts.iter().flatten().collect(),
             Op::Transform { steps, .. } => steps
@@ -271,6 +295,7 @@ impl Op {
     pub fn inputs(&self) -> Vec<FeatureId> {
         match self {
             Op::Transform { input, .. } | Op::Pattern { input, .. } => vec![*input],
+            Op::Extrude { profile, .. } => vec![*profile],
             Op::Union { ids } | Op::Intersect { ids } => ids.clone(),
             Op::Difference { a, b } => std::iter::once(*a).chain(b.iter().copied()).collect(),
             Op::Overlay { regions, .. } => regions.iter().map(|r| r.input).collect(),
@@ -481,6 +506,26 @@ impl Model {
         r: impl Into<Expr>,
     ) -> FeatureId {
         self.push(name, Op::RoundedRect { min: e2(min), max: e2(max), r: r.into() })
+    }
+    pub fn box_(
+        &mut self,
+        name: &str,
+        min: (impl Into<Expr>, impl Into<Expr>, impl Into<Expr>),
+        max: (impl Into<Expr>, impl Into<Expr>, impl Into<Expr>),
+    ) -> FeatureId {
+        self.push(name, Op::Box { min: e3(min), max: e3(max) })
+    }
+    pub fn cylinder(
+        &mut self,
+        name: &str,
+        base: (impl Into<Expr>, impl Into<Expr>, impl Into<Expr>),
+        r: impl Into<Expr>,
+        h: impl Into<Expr>,
+    ) -> FeatureId {
+        self.push(name, Op::Cylinder { base: e3(base), axis: Axis::Z, r: r.into(), h: h.into() })
+    }
+    pub fn extrude(&mut self, name: &str, profile: FeatureId, z0: impl Into<Expr>, z1: impl Into<Expr>) -> FeatureId {
+        self.push(name, Op::Extrude { profile, z0: z0.into(), z1: z1.into() })
     }
     pub fn circle(&mut self, name: &str, center: (impl Into<Expr>, impl Into<Expr>), r: impl Into<Expr>) -> FeatureId {
         self.push(name, Op::Circle { center: e2(center), r: r.into() })

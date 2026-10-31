@@ -74,9 +74,14 @@ impl P<'_> {
                     self.i += 1;
                 }
                 let name = std::str::from_utf8(&self.s[st..self.i]).unwrap().to_string();
+                assert!(!name.is_empty(), "unexpected character {:?} in printed code", self.s[self.i] as char);
                 if self.s.get(self.i) == Some(&b'(') {
                     self.i += 1;
-                    A::Call(name, self.items(b')'))
+                    let c = A::Call(name, self.items(b')'));
+                    if self.s.get(self.i) == Some(&b'?') {
+                        self.i += 1;
+                    }
+                    c
                 } else if self.s.get(self.i) == Some(&b'!') {
                     self.i += 2; // vec![
                     A::List(self.items(b']'))
@@ -183,6 +188,9 @@ pub fn build(code: &str) -> Model {
             "rect" => Some(m.rect(&st(&a[0]), e2(&a[1]), e2(&a[2]))),
             "rounded_rect" => Some(m.rounded_rect(&st(&a[0]), e2(&a[1]), e2(&a[2]), expr(&a[3]))),
             "circle" => Some(m.circle(&st(&a[0]), e2(&a[1]), expr(&a[2]))),
+            "box_" => Some(m.box_(&st(&a[0]), e3(&a[1]), e3(&a[2]))),
+            "cylinder" => Some(m.cylinder(&st(&a[0]), e3(&a[1]), expr(&a[2]), expr(&a[3]))),
+            "extrude" => Some(m.extrude(&st(&a[0]), fid(&a[1], &ids), expr(&a[2]), expr(&a[3]))),
             "ellipse" => Some(m.ellipse(&st(&a[0]), e2(&a[1]), e2(&a[2]), expr(&a[3]))),
             "polygon" | "polygon_named" => {
                 let A::List(pts) = &a[1] else { panic!() };

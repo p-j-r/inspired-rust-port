@@ -14,7 +14,7 @@ use crate::error::{GeomError, GeomResult};
 use crate::math::*;
 use crate::model::RegionKind;
 use crate::prim::*;
-use crate::scene::{Cache, Scene};
+use crate::scene::{Cache, RegionX, Scene};
 use std::collections::HashMap;
 
 /// Width of the "undecidable" band around the tolerance, in units of `tol`.
@@ -183,6 +183,20 @@ type PairWork = (Curve, Curve, (f64, f64), (f64, f64));
 
 /// Builds the region complex of a scene.
 pub fn arrange(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
+    arrange_with(scene, cache, &|bit| scene.region_of(bit), &|| scene.regions.clone())
+}
+
+/// Classifier of a side: the region index (any numbering) for a set of inside bits, `None` for the void.
+pub type Classify<'a> = &'a dyn Fn(&dyn Fn(usize) -> bool) -> Option<usize>;
+
+/// The arrangement with a caller-supplied classifier (the layer stack uses composite classes for the common refinement);
+/// `regions` is called once the classes are known and returns the region table the class indices refer to.
+pub fn arrange_with(
+    scene: &Scene,
+    cache: &mut Cache,
+    classify: Classify,
+    regions: &dyn Fn() -> Vec<RegionX>,
+) -> GeomResult<Complex> {
     let diag = scene.bounds.diagonal();
     if diag.is_nan() || diag <= 0.0 || !diag.is_finite() {
         return Err(GeomError("the model has no extent: no region has any area".into()));
@@ -368,7 +382,22 @@ pub fn arrange(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
             continue;
         }
         let raw = cache.pairs.get(&key(i, j)).cloned().unwrap_or_default();
+        // a tangent contact at the end point of a piece whose own profile continues smoothly along the other curve is not a grazing
+        // of two different shapes (an arc that starts tangent to the edge it follows)
+        let smooth = |a: &Seg, b: &Seg, g: V2| -> bool {
+            segs.iter().any(|o| {
+                o.prim == a.prim
+                    && o.cid == b.cid
+                    && !o.closed
+                    && [curves.list[o.cid as usize].eval(o.a), curves.list[o.cid as usize].eval(o.b)]
+                        .iter()
+                        .any(|e| dist2(*e, g) <= band)
+            })
+        };
         for g in &raw.graze {
+            if smooth(si, sj, *g) || smooth(sj, si, *g) {
+                continue;
+            }
             if near_seg(si, *g) && near_seg(sj, *g) {
                 return Err(GeomError(format!(
                     "{} touches {} tangentially near ({:.6e}, {:.6e}): move one of them by more than {:.1e} m, or make the curves coincide",
@@ -518,8 +547,8 @@ pub fn arrange(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
                 br[p] = bl[p];
             }
         }
-        let left = scene.region_of(&|i| bl[i]);
-        let right = scene.region_of(&|i| br[i]);
+        let left = classify(&|i| bl[i]);
+        let right = classify(&|i| br[i]);
         if left != right {
             kept.push(KEdge { cid: s.cid, t0: s.t0, t1: s.t1, v0: s.v0, v1: s.v1, left, right, owners: s.owners });
         }
@@ -578,12 +607,13 @@ pub fn arrange(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         a.t1 = a.t0 + sweep;
         a.v1 = b.v1;
     }
-    finish(scene, curves, verts, kept, tol, prims)
+    finish(scene, &regions(), curves, verts, kept, tol, prims)
 }
 
 /// Orders edges and vertices, builds loops and regions, names everything.
 fn finish(
     scene: &Scene,
+    sreg: &[RegionX],
     curves: Curves,
     verts: Verts,
     mut kept: Vec<KEdge>,
@@ -720,7 +750,7 @@ fn finish(
     }
 
     // regions that exist: all declared ones, and generated (Pml) ones only when they have area
-    let nreg = scene.regions.len();
+    let nreg = sreg.len();
     let mut has_loop = vec![false; nreg];
     for c in &cycles {
         has_loop[c.region] = true;
@@ -728,7 +758,7 @@ fn finish(
     let mut warnings_region = vec![];
     let mut fin: Vec<Option<u32>> = vec![None; nreg];
     let mut regions: Vec<Region> = vec![];
-    for (i, r) in scene.regions.iter().enumerate() {
+    for (i, r) in sreg.iter().enumerate() {
         let generated = r.pml.is_some();
         if matches!(r.kind, RegionKind::Hole | RegionKind::Void) {
             continue;
@@ -754,14 +784,13 @@ fn finish(
     }
     for i in 0..regions.len() {
         let si = regions[i].scene_index;
-        if let Some(pn) = &scene.regions[si].parent {
+        if let Some(pn) = &sreg[si].parent {
             regions[i].parent = regions.iter().position(|r| &r.name == pn).map(|p| p as u32);
         }
     }
 
     // edges
-    let leaves: Vec<Vec<usize>> = scene
-        .regions
+    let leaves: Vec<Vec<usize>> = sreg
         .iter()
         .map(|r| {
             let mut v = vec![];
@@ -823,6 +852,12 @@ fn finish(
             left,
             right,
             prov,
+            owner_prims: {
+                let mut o: Vec<u32> = k.owners.iter().map(|x| x.prim).collect();
+                o.sort_unstable();
+                o.dedup();
+                o
+            },
             length,
             bbox: c.bbox(k.t0, k.t1),
         });
@@ -836,10 +871,7 @@ fn finish(
     let mut loops: Vec<Loop> = vec![];
     for c in &cycles {
         let Some(r) = fin[c.region] else {
-            return Err(GeomError(format!(
-                "internal error: boundary of dropped region '{}'",
-                scene.regions[c.region].name
-            )));
+            return Err(GeomError(format!("internal error: boundary of dropped region '{}'", sreg[c.region].name)));
         };
         loops.push(Loop { region: r, edges: c.edges.clone(), area: c.area, outer: None });
     }
@@ -894,7 +926,19 @@ fn finish(
         })
         .collect();
     let _ = warnings_region;
-    Ok(Complex { dim: 2, tol, origin: area_origin, curves, regions, edges, vertices, loops, scene_to_region: fin })
+    Ok(Complex {
+        dim: 2,
+        tol,
+        origin: area_origin,
+        curves,
+        regions,
+        edges,
+        vertices,
+        loops,
+        scene_to_region: fin,
+        faces: vec![],
+        stack: None,
+    })
 }
 
 /// Even-odd test of `p` against a loop flattened to chords (used only to decide which outer loop a hole belongs to).

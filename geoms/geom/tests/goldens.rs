@@ -16,11 +16,15 @@ fn write_goldens_when_asked() {
     if std::env::var("GEOM_WRITE_GOLDEN").is_err() {
         return;
     }
-    for g in all_2d() {
+    for g in all_models() {
         let ev = g.model.eval(Tier::Complex).unwrap();
         let mut e = g.expected.clone();
         if e.names.is_empty() {
-            let mut n: Vec<String> = ev.edges().iter().map(|x| x.name.clone()).collect();
+            let mut n: Vec<String> = if g.model.list.dim == 3 {
+                ev.faces().iter().map(|x| x.name.clone()).collect()
+            } else {
+                ev.edges().iter().map(|x| x.name.clone()).collect()
+            };
             n.sort();
             n.dedup();
             e.names = n;
@@ -39,8 +43,8 @@ fn write_goldens_when_asked() {
 }
 
 #[test]
-fn golden_2d_models_match_their_invariants() {
-    for g in all_2d() {
+fn golden_models_match_their_invariants() {
+    for g in all_models() {
         let list: FeatureList =
             serde_json::from_str(&std::fs::read_to_string(dir().join(format!("{}.json", g.name))).unwrap()).unwrap();
         assert_eq!(list, g.model.list, "{}: file differs from the builder", g.name);
@@ -61,7 +65,7 @@ fn golden_2d_models_match_their_invariants() {
                 r.measure
             );
         }
-        let mut en: Vec<String> = cx.edges.iter().map(|x| x.name.clone()).collect();
+        let mut en: Vec<String> = (0..cx.facet_count() as u32).map(|i| cx.facet_name(i).to_string()).collect();
         en.sort();
         en.dedup();
         assert_eq!(en, exp.names, "{}: boundary names", g.name);

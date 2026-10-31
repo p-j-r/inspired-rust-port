@@ -10,6 +10,10 @@ Summary for the whole repository. Details live next to the code; this file only 
   It was written by a different session; this file summarises only what `solvers/` contains. The meshing session reports no
   code taken from other projects and no dependencies.
 
+* `geoms/` (`geom`) is released under **BSD-2-Clause** (`geoms/geom/LICENSE`); statement in [`geoms/PROVENANCE.md`](geoms/PROVENANCE.md): no code
+  taken from other projects, `serde` as the only required dependency. The handoff package contained read-only snapshots of nyx source that were
+  read for conventions and not copied; nyx's own licence is unknown to the author, check it before merging `geom/src/expr.rs`.
+
 ## `solvers/`: how the code relates to other projects
 
 The complete, module-by-module statement is [`solvers/PROVENANCE.md`](solvers/PROVENANCE.md); licence texts and references are in

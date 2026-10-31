@@ -2,6 +2,7 @@
 //! loops become polygons that are triangulated by hole bridging and ear clipping, and each triangle / segment carries the id of its
 //! region / edge so a pick maps back to the model.
 
+use crate::complex::{Complex, FaceGeom};
 use crate::eval::Evaluated;
 use crate::math::*;
 use crate::query::DiscretizeOpts;
@@ -118,16 +119,15 @@ fn triangulate(p: &[V3], outer: Vec<u32>, mut holes: Vec<Vec<u32>>) -> Vec<[u32;
     out
 }
 
-impl Evaluated {
-    /// Triangles carrying region ids and polyline segments carrying edge ids; chords deviate from the exact curves by at most `max_dev`.
-    pub fn tessellate(&self, max_dev: f64) -> DisplayMesh {
-        let cx = self.complex();
+impl Complex {
+    /// 2D: triangles carrying region ids and polyline segments carrying edge ids.
+    pub fn tessellate2d(&self, max_dev: f64, big: f64) -> DisplayMesh {
+        let cx = self;
         let mut m = DisplayMesh::default();
-        let big = self.bounds().diagonal().max(1.0) * 4.0;
         let mut vid: Vec<Option<u32>> = vec![None; cx.vertices.len()];
         let mut pl: Vec<Vec<u32>> = vec![];
         for (e, ed) in cx.edges.iter().enumerate() {
-            let pts = self.discretize_edge(e as u32, DiscretizeOpts { max_dev, max_len: big });
+            let pts = cx.discretize_edge(e as u32, DiscretizeOpts { max_dev, max_len: big });
             let mut ids = vec![];
             let last = pts.len() - 1;
             for (k, (_, p)) in pts.iter().enumerate() {
@@ -183,6 +183,51 @@ impl Evaluated {
                 for t in triangulate(&m.points, ring(lp), holes) {
                     m.tris.push(t);
                     m.tri_face.push(ri as u32);
+                }
+            }
+        }
+        m
+    }
+}
+
+impl Evaluated {
+    /// Triangles carrying region ids (2D) or face ids (3D) and polyline segments carrying edge ids (2D) or face ids (3D); chords
+    /// deviate from the exact curves by at most `max_dev`.
+    pub fn tessellate(&self, max_dev: f64) -> DisplayMesh {
+        let cx = self.complex();
+        let big = self.bounds().diagonal().max(1.0) * 4.0;
+        let Some(st) = &cx.stack else { return cx.tessellate2d(max_dev, big) };
+        let ov = &st.overlay;
+        let flat = ov.tessellate2d(max_dev, big);
+        let mut m = DisplayMesh::default();
+        for (fi, f) in cx.faces.iter().enumerate() {
+            let fi = fi as u32;
+            match f.geom {
+                FaceGeom::Lateral { edge, z0, z1 } => {
+                    let pts = ov.discretize_edge(edge, DiscretizeOpts { max_dev, max_len: big });
+                    let base = m.points.len() as u32;
+                    for (_, p) in &pts {
+                        m.points.push([p[0], p[1], z0]);
+                        m.points.push([p[0], p[1], z1]);
+                    }
+                    for k in 0..pts.len() as u32 - 1 {
+                        let (a, b, c, d) = (base + 2 * k, base + 2 * k + 1, base + 2 * k + 2, base + 2 * k + 3);
+                        m.tris.push([a, c, b]);
+                        m.tris.push([b, c, d]);
+                        m.tri_face.extend([fi, fi]);
+                        m.segs.extend([[a, c], [b, d]]);
+                        m.seg_edge.extend([fi, fi]);
+                    }
+                }
+                FaceGeom::Cap { cell, z } => {
+                    let base = m.points.len() as u32;
+                    m.points.extend(flat.points.iter().map(|p| [p[0], p[1], z]));
+                    for (t, &c) in flat.tris.iter().zip(&flat.tri_face) {
+                        if c == cell {
+                            m.tris.push([base + t[0], base + t[1], base + t[2]]);
+                            m.tri_face.push(fi);
+                        }
+                    }
                 }
             }
         }

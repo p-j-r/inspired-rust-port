@@ -231,3 +231,37 @@ impl Default for Hasher64 {
         Self::new()
     }
 }
+
+/// Placement of a solid: a plane similarity plus an affine map of z (`z -> zs * z + zt`, `zs = +-scale`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Xf3 {
+    pub xy: Xf2,
+    pub zs: f64,
+    pub zt: f64,
+}
+
+impl Xf3 {
+    pub const ID: Xf3 = Xf3 { xy: Xf2::ID, zs: 1.0, zt: 0.0 };
+    /// `self` applied after `o`.
+    pub fn after(&self, o: &Xf3) -> Xf3 {
+        Xf3 { xy: self.xy.after(&o.xy), zs: self.zs * o.zs, zt: self.zs * o.zt + self.zt }
+    }
+    pub fn interval(&self, z: (f64, f64)) -> (f64, f64) {
+        let (a, b) = (self.zs * z.0 + self.zt, self.zs * z.1 + self.zt);
+        (a.min(b), a.max(b))
+    }
+    pub fn key(&self) -> [u64; 8] {
+        let f = |v: f64| if v == 0.0 { 0 } else { v.to_bits() };
+        [
+            self.xy.m[0][0],
+            self.xy.m[0][1],
+            self.xy.m[1][0],
+            self.xy.m[1][1],
+            self.xy.t[0],
+            self.xy.t[1],
+            self.zs,
+            self.zt,
+        ]
+        .map(f)
+    }
+}

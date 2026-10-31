@@ -4,7 +4,7 @@ A lean CSG-over-B-rep geometry kernel for FEM: a serialisable feature list (para
 named regions) is evaluated into a **region complex** with shared interface edges, provenance-based names, rule-based selectors and a
 compiled `LabelMap`. Code and GUI edit the same data. No meshing happens here.
 
-Status: **steps A and B (2D) are delivered**; see [`CHANGELOG.md`](CHANGELOG.md) and the brief in [`../docs/GEOM_HANDOFF.md`](../docs/GEOM_HANDOFF.md).
+Status: **steps A and B (2D) are delivered; step C/D are delivered for prismatic 3D models** (boxes, z-cylinders, extruded profiles, layer stacks); spheres, tori, cones, revolves and slanted or skew geometry are not (see `CHANGELOG.md`); see [`CHANGELOG.md`](CHANGELOG.md) and the brief in [`../docs/GEOM_HANDOFF.md`](../docs/GEOM_HANDOFF.md).
 
 ```bash
 cd geoms/geom
@@ -27,6 +27,16 @@ let si_box = lm.boundary("BOX|Si");                             // Vec<i32>
 let walls = ev.select_labels(&Selector::parse("outer")?)?;
 ```
 
+## 3D: layer stacks
+
+A 3D model is evaluated as a stack of layers (cut at every z level where a solid starts or ends); each layer is a 2D arrangement, and the
+*overlay* is the common refinement of all of them, so every layer boundary is an edge of it. `Evaluated::layer_stack()` gives the layers
+(z range, 2D partition, the region of every overlay cell) and the overlay: exactly what a "2D overlay mesh + extrude" driver needs, with the
+names of side faces from the overlay edges and of caps from the levels. Faces are fragments (a face split by another layer's features keeps one name).
+Boundary faces are `<feature>.<role>` with roles `xmin ... zmax` (Box), `side bottom top` (Cylinder), `side:<role> bottom top` (Extrude);
+interfaces are `A|B`; the faces of a `Cut` are `<feature>.cut`. The normal of a face points from `first` to `second` region
+(lateral: left to right of the swept overlay edge; caps: below to above).
+
 ## Decisions and conventions
 
 * **Tolerance**: `tol = 1e-9 * L`, `L` the diagonal of the model; undecidable band `64 tol` is refused, not guessed (see `arrange.rs`).
@@ -44,6 +54,10 @@ let walls = ev.select_labels(&Selector::parse("outer")?)?;
 
 ## Limits worth knowing
 
+* Prismatic 3D only (see above); everything else is refused with a message.
+* Tolerances are relative to the model size, so features closer than `64 * 1e-9 L` (about `6e-8 L`) to something else are refused; in a layer stack
+  the z levels follow the same rule.
+
 * A line whose direction passes through the vertical flips its canonical direction (so `left` and `right` swap); a model swept through
   that angle changes its topology signature.
 * Ellipse intersections are found numerically (720 samples per curve); two roots closer than a sample interval can be missed.
@@ -59,6 +73,8 @@ let walls = ev.select_labels(&Selector::parse("outer")?)?;
 | label map | 0.1 ms |
 | 100 evaluations of a width sweep (shared cache) | 70 ms (primitives: 99 built, 4701 reused; pairs: 893 computed, 19907 reused) |
 | 200-hole plate, cold | 0.94 ms |
+| one Bragg period (3D, two layers), cold | 0.12 ms |
+| 100-hole photonic-crystal slab (3D: 106 faces, 104 overlay edges), cold | 1.1 ms |
 
 The pair cache removes the intersection work of unchanged pairs, but at these sizes the rest of the arrangement (classification, loops) is
 the same cost as the intersections, so a warm cache is only slightly faster than a cold one. Caching the arrangement per connected group

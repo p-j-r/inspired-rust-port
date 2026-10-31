@@ -151,7 +151,7 @@ impl Evaluated {
         Ok(())
     }
 
-    /// The edges of `b` must be the edges of `a` moved by `t`: equal total length and every sampled point of each set lies on the other.
+    /// The facets of `b` must be the facets of `a` moved by `t`: equal total measure and every sample point of each set lies on the other.
     fn check_congruent(&self, name: &str, a: &EntitySet, b: &EntitySet, t: V3) -> GeomResult<()> {
         let cx = self.complex();
         let tol = 8.0 * cx.tol;
@@ -159,18 +159,15 @@ impl Evaluated {
         let (la, lb) = (len(a), len(b));
         if (la - lb).abs() > 1e-9 * la.max(lb) {
             return Err(GeomError(format!(
-                "Periodic '{name}': the two sides are not congruent under the translation ({:.6e}, {:.6e}, {:.6e}): total lengths differ ({la:.9e} versus {lb:.9e})",
+                "Periodic '{name}': the two sides are not congruent under the translation ({:.6e}, {:.6e}, {:.6e}): total sizes differ ({la:.9e} versus {lb:.9e})",
                 t[0], t[1], t[2]
             )));
         }
-        let on = |set: &EntitySet, p: V2| set.ids.iter().any(|&e| dist2(cx.project_edge(e, p), p) <= tol);
+        let on = |set: &EntitySet, p: V3| set.ids.iter().any(|&e| norm3(sub3(cx.facet_project(e, p), p)) <= tol);
         for (src, dst, sign) in [(a, b, 1.0), (b, a, -1.0)] {
             for &e in &src.ids {
-                let (c, t0, t1) = cx.curve_of(e);
-                for k in 0..=6 {
-                    let p = c.eval(t0 + (t1 - t0) * k as f64 / 6.0);
-                    let q = [p[0] + sign * t[0], p[1] + sign * t[1]];
-                    if !on(dst, q) {
+                for p in cx.facet_samples(e) {
+                    if !on(dst, add3(p, mul3(t, sign))) {
                         return Err(GeomError(format!(
                             "Periodic '{name}': '{}' has no counterpart under the translation ({:.6e}, {:.6e}, {:.6e}); the two sides are not congruent",
                             cx.facet_name(e), t[0], t[1], t[2]
@@ -198,9 +195,10 @@ impl Oracle<'_> {
         let cx = self.ev.complex();
         let q = [p[0], p[1]];
         match e {
-            EntityRef::Edge(i) if (i as usize) < cx.edges.len() => Some(to3(cx.project_edge(i, q))),
+            EntityRef::Edge(i) if cx.dim == 2 && (i as usize) < cx.edges.len() => Some(to3(cx.project_edge(i, q))),
+            EntityRef::Face(i) if cx.dim == 3 && (i as usize) < cx.faces.len() => Some(cx.facet_project(i, p)),
             EntityRef::Vertex(i) => cx.vertices.get(i as usize).map(|v| v.p),
-            EntityRef::Region(r) if (r as usize) < cx.regions.len() => {
+            EntityRef::Region(r) if cx.dim == 2 && (r as usize) < cx.regions.len() => {
                 // inside: the point itself; outside: the nearest boundary point of the region
                 if self.ev.classify(p) == Some(r) {
                     return Some(p);

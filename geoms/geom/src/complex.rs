@@ -51,8 +51,38 @@ pub struct Edge {
     pub left: Option<u32>,
     pub right: Option<u32>,
     pub prov: Vec<Prov>,
+    /// primitives (scene indices) whose boundary pieces make up this edge
+    pub owner_prims: Vec<u32>,
     pub length: f64,
     pub bbox: Aabb,
+}
+
+/// A 3D face fragment of a prismatic model.
+#[derive(Clone, Debug)]
+pub enum FaceGeom {
+    /// a 2D overlay edge swept over `[z0, z1]`
+    Lateral { edge: u32, z0: f64, z1: f64 },
+    /// a cell of the overlay at height `z`
+    Cap { cell: u32, z: f64 },
+}
+
+#[derive(Clone, Debug)]
+pub struct Face {
+    pub name: String,
+    pub geom: FaceGeom,
+    /// the normal points from `first` to `second` (lateral: left to right of the swept edge; caps: below to above)
+    pub first: Option<u32>,
+    pub second: Option<u32>,
+    pub prov: Vec<Prov>,
+    pub area: f64,
+    pub bbox: Aabb,
+}
+
+impl Face {
+    /// Clamps a fraction to `[0, 1]`.
+    pub fn u_clamp(&self, u: f64) -> f64 {
+        u.clamp(0.0, 1.0)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -86,6 +116,9 @@ pub struct Complex {
     pub loops: Vec<Loop>,
     /// scene region index -> final region id (`None` for holes and for dropped empty generated regions)
     pub scene_to_region: Vec<Option<u32>>,
+    /// 3D only: named face fragments, and the layer stack they were derived from
+    pub faces: Vec<Face>,
+    pub stack: Option<Box<crate::stack::LayerStack>>,
 }
 
 pub fn curve_kind(c: &Curve) -> &'static str {
@@ -142,48 +175,224 @@ impl Complex {
         }
     }
 
-    // ---- uniform "facet" access (the codimension-1 entities: edges of a 2D complex) used by selectors ----
+    // ---- uniform "facet" access (the codimension-1 entities: edges of a 2D complex, faces of a 3D one), used by selectors ----
 
     pub fn facet_count(&self) -> usize {
-        self.edges.len()
+        if self.dim == 3 {
+            self.faces.len()
+        } else {
+            self.edges.len()
+        }
     }
     pub fn facet_name(&self, i: u32) -> &str {
-        &self.edges[i as usize].name
+        if self.dim == 3 {
+            &self.faces[i as usize].name
+        } else {
+            &self.edges[i as usize].name
+        }
     }
     pub fn facet_prov(&self, i: u32) -> &[Prov] {
-        &self.edges[i as usize].prov
+        if self.dim == 3 {
+            &self.faces[i as usize].prov
+        } else {
+            &self.edges[i as usize].prov
+        }
     }
+    /// `(first, second)`: the facet normal points from the first region to the second.
     pub fn facet_sides(&self, i: u32) -> (Option<u32>, Option<u32>) {
-        let e = &self.edges[i as usize];
-        (e.left, e.right)
+        if self.dim == 3 {
+            let f = &self.faces[i as usize];
+            (f.first, f.second)
+        } else {
+            let e = &self.edges[i as usize];
+            (e.left, e.right)
+        }
     }
     pub fn facet_bbox(&self, i: u32) -> Aabb {
-        self.edges[i as usize].bbox
+        if self.dim == 3 {
+            self.faces[i as usize].bbox
+        } else {
+            self.edges[i as usize].bbox
+        }
     }
+    /// Length (2D) or area (3D).
     pub fn facet_measure(&self, i: u32) -> f64 {
-        self.edges[i as usize].length
+        if self.dim == 3 {
+            self.faces[i as usize].area
+        } else {
+            self.edges[i as usize].length
+        }
     }
+    fn overlay(&self) -> &Complex {
+        &self.stack.as_ref().expect("a 3D complex has a layer stack").overlay
+    }
+    /// The curve a facet lies on (2D edge, or the swept overlay edge of a lateral face).
+    fn facet_curve(&self, i: u32) -> Option<&Curve> {
+        if self.dim == 3 {
+            match self.faces[i as usize].geom {
+                FaceGeom::Lateral { edge, .. } => {
+                    Some(&self.overlay().curves[self.overlay().edges[edge as usize].curve as usize])
+                }
+                FaceGeom::Cap { .. } => None,
+            }
+        } else {
+            Some(&self.curves[self.edges[i as usize].curve as usize])
+        }
+    }
+    /// `plane`, `cylinder` (3D) or `line`, `circle`, `ellipse` (2D).
     pub fn facet_kind(&self, i: u32) -> &'static str {
-        curve_kind(&self.curves[self.edges[i as usize].curve as usize])
+        match (self.dim, self.facet_curve(i)) {
+            (3, Some(Curve::Line { .. })) | (3, None) => "plane",
+            (3, Some(Curve::Circle { .. })) => "cylinder",
+            (3, Some(_)) => "elliptic cylinder",
+            (_, Some(c)) => curve_kind(c),
+            (_, None) => "plane",
+        }
     }
     pub fn facet_radius(&self, i: u32) -> Option<f64> {
-        match &self.curves[self.edges[i as usize].curve as usize] {
-            Curve::Circle { r, .. } => Some(*r),
+        match self.facet_curve(i) {
+            Some(Curve::Circle { r, .. }) => Some(*r),
             _ => None,
         }
     }
-    /// Outward normals sampled at the end points and the middle of the facet.
+    /// Outward normals (towards the void; for interfaces from first to second) sampled at the ends and the middle.
     pub fn facet_normals(&self, i: u32) -> Vec<V3> {
+        if self.dim == 3 {
+            let f = &self.faces[i as usize];
+            let sign = if f.first.is_none() { -1.0 } else { 1.0 };
+            return match f.geom {
+                FaceGeom::Lateral { edge, .. } => {
+                    let ov = self.overlay();
+                    let e = &ov.edges[edge as usize];
+                    [e.t0, 0.5 * (e.t0 + e.t1), e.t1]
+                        .iter()
+                        .map(|&t| to3(mul2(ov.edge_normal(edge, t), sign)))
+                        .collect()
+                }
+                FaceGeom::Cap { .. } => vec![[0.0, 0.0, sign]],
+            };
+        }
         let e = &self.edges[i as usize];
         [e.t0, 0.5 * (e.t0 + e.t1), e.t1].iter().map(|&t| to3(self.outward_normal(i, t))).collect()
     }
     pub fn facet_vertices(&self, i: u32) -> Vec<u32> {
+        if self.dim == 3 {
+            return vec![];
+        }
         let e = &self.edges[i as usize];
         if e.v0 == e.v1 {
             vec![e.v0]
         } else {
             vec![e.v0, e.v1]
         }
+    }
+    /// The point of the facet closest to `p`.
+    pub fn facet_project(&self, i: u32, p: V3) -> V3 {
+        if self.dim == 2 {
+            return to3(self.project_edge(i, [p[0], p[1]]));
+        }
+        let ov = self.overlay();
+        match self.faces[i as usize].geom {
+            FaceGeom::Lateral { edge, z0, z1 } => {
+                let q = ov.project_edge(edge, [p[0], p[1]]);
+                [q[0], q[1], p[2].clamp(z0, z1)]
+            }
+            FaceGeom::Cap { cell, z } => {
+                let xy = [p[0], p[1]];
+                if ov.locate(xy) == Some(cell) {
+                    return [p[0], p[1], z];
+                }
+                let mut best: Option<(f64, V2)> = None;
+                for &l in &ov.regions[cell as usize].loops {
+                    for &(e, _) in &ov.loops[l as usize].edges {
+                        let q = ov.project_edge(e, xy);
+                        let d = dist2(q, xy);
+                        if best.is_none_or(|b| d < b.0) {
+                            best = Some((d, q));
+                        }
+                    }
+                }
+                best.map_or([p[0], p[1], z], |b| [b.1[0], b.1[1], z])
+            }
+        }
+    }
+    /// Representative points of the facet (corners, edge middles, an interior point), used for congruence checks.
+    pub fn facet_samples(&self, i: u32) -> Vec<V3> {
+        if self.dim == 2 {
+            let (c, t0, t1) = self.curve_of(i);
+            return (0..=6).map(|k| to3(c.eval(t0 + (t1 - t0) * k as f64 / 6.0))).collect();
+        }
+        let ov = self.overlay();
+        match self.faces[i as usize].geom {
+            FaceGeom::Lateral { edge, z0, z1 } => {
+                let (c, t0, t1) = ov.curve_of(edge);
+                let mut v = vec![];
+                for k in 0..=4 {
+                    let q = c.eval(t0 + (t1 - t0) * k as f64 / 4.0);
+                    for zk in 0..=2 {
+                        v.push([q[0], q[1], z0 + (z1 - z0) * zk as f64 / 2.0]);
+                    }
+                }
+                v
+            }
+            FaceGeom::Cap { cell, z } => {
+                let mut v: Vec<V3> = vec![];
+                for &l in &ov.regions[cell as usize].loops {
+                    for &(e, fwd) in &ov.loops[l as usize].edges {
+                        let ed = &ov.edges[e as usize];
+                        let c = &ov.curves[ed.curve as usize];
+                        for t in [ed.t0, 0.5 * (ed.t0 + ed.t1)] {
+                            let q = c.eval(if fwd { t } else { ed.t0 + ed.t1 - t });
+                            v.push([q[0], q[1], z]);
+                        }
+                    }
+                }
+                v.truncate(48);
+                if let Some(q) = crate::stack::interior_point(ov, cell) {
+                    v.push([q[0], q[1], z]);
+                }
+                v
+            }
+        }
+    }
+
+    /// 3D self-checks: every face separates two different sides, volumes are positive, and every region is closed
+    /// (the sum of its outward area vectors vanishes: the lateral faces and the caps balance in x, y and z).
+    fn check3(&self) -> Result<(), String> {
+        let ov = self.overlay();
+        let scale = self.regions.iter().map(|r| r.bbox.diagonal()).fold(0.0, f64::max).max(1e-300);
+        let mut flux = vec![[0.0f64; 3]; self.regions.len()];
+        for f in &self.faces {
+            if f.first == f.second {
+                return Err(format!("face '{}' has the same region on both sides", f.name));
+            }
+            let v = match f.geom {
+                FaceGeom::Lateral { edge, z0, z1 } => {
+                    let e = &ov.edges[edge as usize];
+                    let c = &ov.curves[e.curve as usize];
+                    let (a, b) = (c.eval(e.t0), c.eval(e.t1));
+                    [(z1 - z0) * (b[1] - a[1]), -(z1 - z0) * (b[0] - a[0]), 0.0]
+                }
+                FaceGeom::Cap { .. } => [0.0, 0.0, f.area],
+            };
+            for (r, s) in [(f.first, 1.0), (f.second, -1.0)] {
+                if let Some(r) = r {
+                    for k in 0..3 {
+                        flux[r as usize][k] += s * v[k];
+                    }
+                }
+            }
+        }
+        for (r, fl) in self.regions.iter().zip(&flux) {
+            if r.measure <= 0.0 {
+                continue;
+            }
+            // vertices are snapped within `tol`, so closure holds to a few tolerances times the model size
+            if fl.iter().any(|x| x.abs() > 64.0 * self.tol * scale + 1e-12 * scale * scale) {
+                return Err(format!("region '{}' is not closed: its outward area vectors sum to {fl:?}", r.name));
+            }
+        }
+        Ok(())
     }
 
     /// Region containing `p` by testing the boundary loops (chord-flattened); agrees with `Evaluated::classify` away from the boundary.
@@ -205,10 +414,12 @@ impl Complex {
 
     /// Total length of the interface between two regions.
     pub fn interface_length(&self, a: u32, b: u32) -> f64 {
-        self.edges
-            .iter()
-            .filter(|e| (e.left == Some(a) && e.right == Some(b)) || (e.left == Some(b) && e.right == Some(a)))
-            .map(|e| e.length)
+        (0..self.facet_count() as u32)
+            .filter(|&i| {
+                let (l, r) = self.facet_sides(i);
+                (l == Some(a) && r == Some(b)) || (l == Some(b) && r == Some(a))
+            })
+            .map(|i| self.facet_measure(i))
             .sum()
     }
 
@@ -222,6 +433,9 @@ impl Complex {
     /// region areas are positive, and the regions tile their union (the sum of region areas equals the area enclosed by the
     /// edges that touch the void).
     pub fn check(&self) -> Result<(), String> {
+        if self.dim == 3 {
+            return self.check3();
+        }
         let scale = self.regions.iter().map(|r| r.bbox.diagonal()).fold(0.0, f64::max).max(1e-300);
         for (i, e) in self.edges.iter().enumerate() {
             if e.left == e.right {

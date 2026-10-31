@@ -1,5 +1,34 @@
 # Changelog
 
+## Steps C and D (prismatic 3D, layer stacks) - delivered in part, see "Not delivered"
+
+* 3D feature lists: `Box`, `Cylinder` (axis z), `Extrude` of any 2D profile, Transform (translate, rotate about z, mirror, uniform
+  scale), Pattern, Booleans, `Overlay`, `Pml` (26 side combinations in 3D), `Cut` (axis-aligned planes; faces `<feature>.cut`, tag
+  `symmetry`), `Periodic` (verified congruent by sampling both sides), `Size`, `Tag`. Roles: Box `xmin xmax ymin ymax zmin zmax`, Cylinder
+  `side bottom top`, Extrude `side:<role> bottom top`.
+* Evaluation as a **layer stack** (`stack.rs`): z levels, one 2D arrangement per layer, and the *overlay*, the common refinement of all layers
+  (the 2D arrangement run with composite per-layer classes). `Evaluated::layer_stack()` returns the layers (z range, partition, region of every
+  overlay cell) and the overlay. Detected for every 3D model this build can represent; non-prismatic content is refused (below).
+* 3D faces derived from the stack: lateral faces = overlay edges swept over runs of layers (merged while the sides and name agree), caps =
+  overlay cells at levels where the region below differs from the region above. Names follow the 2D rules (`A|B`, `<feature>.<role>`).
+  Volumes, face areas, projection (`oracle().project(.., Face(f))`), fractions (two per face), `classify`, selectors and `LabelMap` all work on faces.
+* Self-check for 3D: every face separates two sides, volumes are positive, and every region is closed (the outward area vectors sum to
+  zero in x, y and z, to a few tolerances).
+* `surfaces_for_stuffing()` (planes and cylinders, coincident faces share one surface, with the extent of its faces), 3D display tessellation,
+  `diff` kind `ZOnly` (same topology, same xy overlay geometry, different z).
+* Golden models: three Bragg periods (symmetric, asymmetric, uniform) with a Floquet pair, cylinder cavity, concentric cylinders.
+* Property test: random 3D box / cylinder models never panic or fail the closure check.
+
+### Not delivered (needs the general 3D arrangement)
+
+* Sphere, Cone, Torus, Revolve, tapered sweeps, rotations about x or y, cylinders along x or y, slanted cut planes, skew cylinders and the
+  `SurfSurf` intersection curves. A model that needs them is refused with a message (`Cut ... slanted`, `Cylinder ... axis`, `must be the input
+  of an Extrude`). The goldens "sphere in a box", "torus", "concentric spheres", "box with a slanted cut" and "two skew cylinders" are therefore
+  not provided; the slanted cut and skew cases exist only as refusals.
+* 3D edges and vertices of the B-rep (the 2D edges and vertices of the overlay are available through `layer_stack().overlay`), 3D curve
+  queries and 3D `discretize_edge`; `adjacent(...)` between 3D faces; the Euler relation (replaced by the closure check).
+* Because everything prismatic is also a layer stack, `layer_stack()` never returns `None` for a model that evaluates.
+
 ## Step B (tiers, cache, queries, sweep support) - delivered
 
 * Normalisation of region expressions (flatten, drop empties, `A cap A = A`, bounding-box-disjoint intersections and difference
