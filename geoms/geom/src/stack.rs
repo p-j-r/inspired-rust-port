@@ -498,8 +498,13 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         loops: vec![],
         scene_to_region: fin,
         faces,
+        edges3: vec![],
         stack: Some(Box::new(stack)),
     };
+    let mut cx = cx;
+    let (edges3, vertices) = crate::topo3::build(&cx);
+    cx.edges3 = edges3;
+    cx.vertices = vertices;
     Ok(cx)
 }
 

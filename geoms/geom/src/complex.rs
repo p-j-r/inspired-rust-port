@@ -78,6 +78,26 @@ pub struct Face {
     pub bbox: Aabb,
 }
 
+/// Where a 3D edge lies: a vertical run above an overlay vertex, or an overlay edge at a level.
+#[derive(Clone, Debug)]
+pub enum EdgeGeom {
+    Vertical { vertex: u32, z0: f64, z1: f64 },
+    Horizontal { edge: u32, z: f64 },
+}
+
+/// A 3D edge: shared by two or more face fragments (three or more at a junction of regions).
+#[derive(Clone, Debug)]
+pub struct Edge3 {
+    pub name: String,
+    pub geom: EdgeGeom,
+    pub v0: u32,
+    pub v1: u32,
+    /// the faces that meet along the edge, ascending
+    pub faces: Vec<u32>,
+    pub length: f64,
+    pub bbox: Aabb,
+}
+
 impl Face {
     /// Clamps a fraction to `[0, 1]`.
     pub fn u_clamp(&self, u: f64) -> f64 {
@@ -118,6 +138,8 @@ pub struct Complex {
     pub scene_to_region: Vec<Option<u32>>,
     /// 3D only: named face fragments, and the layer stack they were derived from
     pub faces: Vec<Face>,
+    /// 3D only: crease edges between face fragments (see `topo3.rs`); `vertices` holds their end points
+    pub edges3: Vec<Edge3>,
     pub stack: Option<Box<crate::stack::LayerStack>>,
 }
 
@@ -277,7 +299,11 @@ impl Complex {
     }
     pub fn facet_vertices(&self, i: u32) -> Vec<u32> {
         if self.dim == 3 {
-            return vec![];
+            let mut v: Vec<u32> =
+                self.edges3.iter().filter(|e| e.faces.contains(&i)).flat_map(|e| [e.v0, e.v1]).collect();
+            v.sort_unstable();
+            v.dedup();
+            return v;
         }
         let e = &self.edges[i as usize];
         if e.v0 == e.v1 {
@@ -392,7 +418,7 @@ impl Complex {
                 return Err(format!("region '{}' is not closed: its outward area vectors sum to {fl:?}", r.name));
             }
         }
-        Ok(())
+        self.check_topology3()
     }
 
     /// Region containing `p` by testing the boundary loops (chord-flattened); agrees with `Evaluated::classify` away from the boundary.

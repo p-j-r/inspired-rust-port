@@ -264,3 +264,49 @@ fn tessellation_and_stuffing_surfaces() {
         .iter()
         .any(|s| matches!(s.surface, geom::stack::Surface::Cylinder { r, .. } if (r - 0.3).abs() < 1e-15)));
 }
+
+#[test]
+fn three_d_edges_and_vertices_form_a_closed_topology() {
+    // a plain box: 12 edges, 8 vertices, every edge shared by two faces
+    let mut m = Model::new_3d();
+    let b = m.box_("b", (0.0, 0.0, 0.0), (2.0, 3.0, 4.0));
+    m.overlay(&[("b", b)]);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert_eq!((ev.faces().len(), ev.edges3().len(), ev.vertices().len()), (6, 12, 8));
+    assert!(ev.edges3().iter().all(|e| e.faces.len() == 2));
+    // Euler: V - E + F = 2 for a closed convex shell
+    assert_eq!(ev.vertices().len() as i64 - ev.edges3().len() as i64 + ev.faces().len() as i64, 2);
+    assert!(
+        ev.edges3().iter().any(|e| e.name == "b.xmin/b.ymin") && ev.edges3().iter().any(|e| e.name == "b.xmax/b.zmax")
+    );
+    let total: f64 = ev.edges3().iter().map(|e| e.length).sum();
+    assert!(close(total, 4.0 * (2.0 + 3.0 + 4.0)));
+    // selectors, oracle and fractions on edges and vertices
+    let e = ev.resolve(&Selector::parse("name(b.xmin/b.ymin)").unwrap()).unwrap();
+    assert_eq!(e.set.kind, geom::select::EntityKind::Edges);
+    let id = e.set.ids[0];
+    let q = ev.oracle().project([-1.0, -1.0, 1.0], EntityRef::Edge(id)).unwrap();
+    assert!((q[0]).abs() < 1e-15 && (q[1]).abs() < 1e-15 && (q[2] - 1.0).abs() < 1e-15);
+    let f = ev.fractions_of(EntityRef::Edge(id), [0.0, 0.0, 1.0]).unwrap();
+    assert!((f.u - 0.25).abs() < 1e-15);
+    let p = ev.position_at(EntityRef::Edge(id), f).unwrap();
+    assert!((p[2] - 1.0).abs() < 1e-15);
+    // a block with a cylindrical cavity: the circles are edges between the cavity wall and the two caps, the seam is not an edge
+    let mut m = Model::new_3d();
+    let b = m.box_("block", (0.0, 0.0, 0.0), (2.0, 2.0, 1.0));
+    let c = m.cylinder("cav", (1.0, 1.0, -1.0), 0.3, 3.0);
+    let d = m.difference("d", b, &[c]);
+    m.overlay(&[("block", d)]);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert_eq!(ev.edges3().len(), 12 + 2);
+    assert!(ev.edges3().iter().filter(|e| e.name.contains("cav.side")).count() == 2);
+    // a Bragg period: junction edges are shared by three faces (two regions meeting the void, or three regions)
+    let ev = bragg(0.5, 80e-9).eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert!(ev.edges3().iter().any(|e| e.faces.len() >= 3));
+    assert!(ev.edges3().iter().all(|e| e.faces.len() >= 2));
+    // vertices know their edges and are named after the faces around them
+    assert!(ev.vertices().iter().all(|v| !v.edges.is_empty() && !v.name.is_empty()));
+}

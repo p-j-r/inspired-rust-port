@@ -595,6 +595,11 @@ impl Ctx<'_> {
             Selector::Name(n) => {
                 let ids: Vec<u32> = self.all_facets().into_iter().filter(|&i| cx.facet_name(i) == n).collect();
                 if ids.is_empty() {
+                    let es: Vec<u32> =
+                        (0..cx.edges3.len() as u32).filter(|&e| cx.edges3[e as usize].name == *n).collect();
+                    if !es.is_empty() {
+                        return Ok(EntitySet::new(EntityKind::Edges, es));
+                    }
                     let vs: Vec<u32> =
                         (0..cx.vertices.len() as u32).filter(|&v| cx.vertices[v as usize].name == *n).collect();
                     self.empty_warn(s, EntitySet::new(if vs.is_empty() { facets } else { EntityKind::Vertices }, vs))

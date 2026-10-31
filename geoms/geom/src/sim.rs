@@ -197,6 +197,7 @@ impl Oracle<'_> {
         match e {
             EntityRef::Edge(i) if cx.dim == 2 && (i as usize) < cx.edges.len() => Some(to3(cx.project_edge(i, q))),
             EntityRef::Face(i) if cx.dim == 3 && (i as usize) < cx.faces.len() => Some(cx.facet_project(i, p)),
+            EntityRef::Edge(i) if cx.dim == 3 && (i as usize) < cx.edges3.len() => Some(cx.edge3_closest(i, p).0),
             EntityRef::Vertex(i) => cx.vertices.get(i as usize).map(|v| v.p),
             EntityRef::Region(r) if cx.dim == 2 && (r as usize) < cx.regions.len() => {
                 // inside: the point itself; outside: the nearest boundary point of the region

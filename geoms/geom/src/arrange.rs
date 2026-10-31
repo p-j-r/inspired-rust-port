@@ -949,6 +949,7 @@ fn finish(
         loops,
         scene_to_region: fin,
         faces: vec![],
+        edges3: vec![],
         stack: None,
     })
 }

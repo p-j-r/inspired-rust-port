@@ -134,6 +134,9 @@ impl Evaluated {
     /// without a parametrisation (2D regions) or for unknown ids.
     pub fn fractions_of(&self, ent: EntityRef, p: V3) -> Option<Fractions> {
         match ent {
+            EntityRef::Edge(i) if self.complex().dim == 3 && (i as usize) < self.complex().edges3.len() => {
+                Some(Fractions { u: self.complex().edge3_closest(i, p).1, v: 0.0 })
+            }
             EntityRef::Edge(i) if (i as usize) < self.complex().edges.len() => {
                 let ed = &self.complex().edges[i as usize];
                 let (t, _) = self.complex().edge_closest(i, [p[0], p[1]]);
@@ -174,6 +177,9 @@ impl Evaluated {
     /// The exact point of the entity at the given fractions.
     pub fn position_at(&self, ent: EntityRef, fr: Fractions) -> Option<V3> {
         match ent {
+            EntityRef::Edge(i) if self.complex().dim == 3 && (i as usize) < self.complex().edges3.len() => {
+                Some(self.complex().edge3_point(i, fr.u))
+            }
             EntityRef::Edge(i) if (i as usize) < self.complex().edges.len() => {
                 let ed = &self.complex().edges[i as usize];
                 Some(self.complex().edge_point(i, ed.t0 + fr.u.clamp(0.0, 1.0) * (ed.t1 - ed.t0)))
@@ -240,7 +246,13 @@ impl Evaluated {
             h.u64(r.kind as u64);
         }
         if let Some(st) = &cx.stack {
-            h.u64(st.layers.len() as u64).u64(cx.faces.len() as u64);
+            h.u64(st.layers.len() as u64).u64(cx.faces.len() as u64).u64(cx.edges3.len() as u64);
+            for e in &cx.edges3 {
+                h.str(&e.name).u64(e.v0 as u64).u64(e.v1 as u64);
+                e.faces.iter().for_each(|&f| {
+                    h.u64(f as u64);
+                });
+            }
             for f in &cx.faces {
                 h.str(&f.name).u64(f.first.map_or(u64::MAX, |x| x as u64)).u64(f.second.map_or(u64::MAX, |x| x as u64));
                 match f.geom {

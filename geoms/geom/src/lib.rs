@@ -17,4 +17,5 @@ pub mod select;
 pub mod sim;
 pub mod stack;
 pub mod tess;
+pub mod topo3;
 pub use error::{GeomError, GeomResult};

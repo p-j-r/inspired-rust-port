@@ -108,6 +108,10 @@ impl Evaluated {
     pub fn layer_stack(&self) -> Option<&crate::stack::LayerStack> {
         self.complex.as_ref()?.stack.as_deref()
     }
+    /// 3D crease edges (shared by two or more faces); empty in 2D, where `edges()` are the boundary curves.
+    pub fn edges3(&self) -> &[crate::complex::Edge3] {
+        &self.complex().edges3
+    }
     pub fn faces(&self) -> &[crate::complex::Face] {
         &self.complex().faces
     }
