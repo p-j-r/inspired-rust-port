@@ -144,7 +144,7 @@ impl Evaluated {
             }
             EntityRef::Face(i) if (i as usize) < self.complex().faces.len() => {
                 let cx = self.complex();
-                let q = cx.facet_project(i, p);
+                let q = cx.iv(cx.facet_project(i, p));
                 let f = &cx.faces[i as usize];
                 Some(match f.geom {
                     crate::complex::FaceGeom::Lateral { edge, z0, z1 } => {
@@ -172,8 +172,8 @@ impl Evaluated {
                         };
                         Fractions { u: fr(dot3(d, pd.u), 0), v: fr(dot3(d, pd.v), 1) }
                     }
-                    crate::complex::FaceGeom::Cap { .. } => {
-                        let b = f.bbox;
+                    crate::complex::FaceGeom::Cap { cell, .. } => {
+                        let b = cx.stack.as_ref()?.overlay.regions[cell as usize].bbox;
                         let frac = |x: f64, k: usize| {
                             if b.hi[k] > b.lo[k] {
                                 ((x - b.lo[k]) / (b.hi[k] - b.lo[k])).clamp(0.0, 1.0)
@@ -220,13 +220,17 @@ impl Evaluated {
                             ],
                         )
                     }
-                    crate::complex::FaceGeom::Cap { z, .. } => [
-                        f.bbox.lo[0] + f.u_clamp(fr.u) * (f.bbox.hi[0] - f.bbox.lo[0]),
-                        f.bbox.lo[1] + f.u_clamp(fr.v) * (f.bbox.hi[1] - f.bbox.lo[1]),
-                        z,
-                    ],
+                    crate::complex::FaceGeom::Cap { cell, z } => {
+                        let b = cx.stack.as_ref()?.overlay.regions[cell as usize].bbox;
+                        [
+                            b.lo[0] + f.u_clamp(fr.u) * (b.hi[0] - b.lo[0]),
+                            b.lo[1] + f.u_clamp(fr.v) * (b.hi[1] - b.lo[1]),
+                            z,
+                        ]
+                    }
                 };
-                Some(cx.facet_project(i, p))
+                // `p` is in the internal frame (identity for polyhedral models)
+                Some(cx.facet_project(i, cx.wv(p)))
             }
             EntityRef::Vertex(i) => self.complex().vertices.get(i as usize).map(|v| v.p),
             _ => None,

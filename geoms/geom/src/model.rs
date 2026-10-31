@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 
 pub type FeatureId = u32;
 
+fn z_axis() -> Axis {
+    Axis::Z
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Axis {
     X,
@@ -193,6 +197,9 @@ pub enum Op {
     /// 3D: a 2D profile feature swept along z from `z0` to `z1`; roles `side:<profile role>`, `bottom`, `top`
     Extrude {
         profile: FeatureId,
+        /// the sweep direction; the profile's `(x, y)` are the two other axes in cyclic order (x,y for z; y,z for x; z,x for y)
+        #[serde(default = "z_axis")]
+        axis: Axis,
         z0: Expr,
         z1: Expr,
         /// wall angle from the vertical in degrees (positive narrows towards z1); makes the solid polyhedral
@@ -576,7 +583,32 @@ impl Model {
         z1: impl Into<Expr>,
         taper_deg: impl Into<Expr>,
     ) -> FeatureId {
-        self.push(name, Op::Extrude { profile, z0: z0.into(), z1: z1.into(), taper_deg: Some(taper_deg.into()) })
+        self.push(
+            name,
+            Op::Extrude { profile, axis: Axis::Z, z0: z0.into(), z1: z1.into(), taper_deg: Some(taper_deg.into()) },
+        )
+    }
+    /// A cylinder along any axis (`axis` x, y or z); all prismatic solids of a model must share one axis.
+    pub fn cylinder_along(
+        &mut self,
+        name: &str,
+        axis: Axis,
+        base: (impl Into<Expr>, impl Into<Expr>, impl Into<Expr>),
+        r: impl Into<Expr>,
+        h: impl Into<Expr>,
+    ) -> FeatureId {
+        self.push(name, Op::Cylinder { base: e3(base), axis, r: r.into(), h: h.into() })
+    }
+    /// A profile swept along any axis (see `Op::Extrude`).
+    pub fn extrude_along(
+        &mut self,
+        name: &str,
+        axis: Axis,
+        profile: FeatureId,
+        z0: impl Into<Expr>,
+        z1: impl Into<Expr>,
+    ) -> FeatureId {
+        self.push(name, Op::Extrude { profile, axis, z0: z0.into(), z1: z1.into(), taper_deg: None })
     }
     pub fn sphere(
         &mut self,
@@ -596,7 +628,7 @@ impl Model {
         self.push(name, Op::Torus { center: e3(center), major: major.into(), minor: minor.into() })
     }
     pub fn extrude(&mut self, name: &str, profile: FeatureId, z0: impl Into<Expr>, z1: impl Into<Expr>) -> FeatureId {
-        self.push(name, Op::Extrude { profile, z0: z0.into(), z1: z1.into(), taper_deg: None })
+        self.push(name, Op::Extrude { profile, axis: Axis::Z, z0: z0.into(), z1: z1.into(), taper_deg: None })
     }
     pub fn circle(&mut self, name: &str, center: (impl Into<Expr>, impl Into<Expr>), r: impl Into<Expr>) -> FeatureId {
         self.push(name, Op::Circle { center: e2(center), r: r.into() })

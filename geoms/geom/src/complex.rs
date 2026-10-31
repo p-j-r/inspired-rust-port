@@ -169,6 +169,9 @@ pub struct Complex {
     pub edges3: Vec<Edge3>,
     /// polyhedral models: the planes that carry faces, each with the 2D complex of its cells
     pub planar: Vec<PlaneData>,
+    /// 3D stack models: the sweep axis (0, 1, 2). Overlay, layers and body data are stored in the internal frame `(axis+1, axis+2, axis)`;
+    /// everything the API returns is in world coordinates (`wv` / `iv` convert).
+    pub axis: usize,
     pub stack: Option<Box<crate::stack::LayerStack>>,
 }
 
@@ -224,6 +227,41 @@ impl Complex {
             None => mul2(n, -1.0),
             Some(_) => n,
         }
+    }
+
+    /// Internal-frame vector to world coordinates.
+    pub fn wv(&self, v: V3) -> V3 {
+        let p = crate::scene::axis_perm(self.axis);
+        let mut o = [0.0; 3];
+        for i in 0..3 {
+            o[p[i]] = v[i];
+        }
+        o
+    }
+    /// World vector to the internal frame.
+    pub fn iv(&self, v: V3) -> V3 {
+        let p = crate::scene::axis_perm(self.axis);
+        [v[p[0]], v[p[1]], v[p[2]]]
+    }
+    /// Converts the stored boxes and points of a freshly built stack complex to world coordinates and records the axis.
+    pub(crate) fn into_world_frame(&mut self, axis: usize) {
+        self.axis = axis;
+        let conv = |c: &Complex, b: Aabb| {
+            if b.is_empty() {
+                b
+            } else {
+                let (lo, hi) = (c.wv(b.lo), c.wv(b.hi));
+                Aabb {
+                    lo: [lo[0].min(hi[0]), lo[1].min(hi[1]), lo[2].min(hi[2])],
+                    hi: [lo[0].max(hi[0]), lo[1].max(hi[1]), lo[2].max(hi[2])],
+                }
+            }
+        };
+        let me = self.clone();
+        self.regions.iter_mut().for_each(|r| r.bbox = conv(&me, r.bbox));
+        self.faces.iter_mut().for_each(|f| f.bbox = conv(&me, f.bbox));
+        self.edges3.iter_mut().for_each(|e| e.bbox = conv(&me, e.bbox));
+        self.vertices.iter_mut().for_each(|v| v.p = me.wv(v.p));
     }
 
     // ---- uniform "facet" access (the codimension-1 entities: edges of a 2D complex, faces of a 3D one), used by selectors ----
@@ -318,6 +356,14 @@ impl Complex {
     }
     /// Outward normals (towards the void; for interfaces from first to second) sampled at the ends and the middle.
     pub fn facet_normals(&self, i: u32) -> Vec<V3> {
+        let n = self.facet_normals_internal(i);
+        if self.dim == 3 {
+            n.into_iter().map(|v| self.wv(v)).collect()
+        } else {
+            n
+        }
+    }
+    fn facet_normals_internal(&self, i: u32) -> Vec<V3> {
         if self.dim == 3 {
             let f = &self.faces[i as usize];
             let sign = if f.first.is_none() { -1.0 } else { 1.0 };
@@ -358,6 +404,13 @@ impl Complex {
     }
     /// The point of the facet closest to `p`.
     pub fn facet_project(&self, i: u32, p: V3) -> V3 {
+        if self.dim == 3 {
+            self.wv(self.facet_project_internal(i, self.iv(p)))
+        } else {
+            self.facet_project_internal(i, p)
+        }
+    }
+    fn facet_project_internal(&self, i: u32, p: V3) -> V3 {
         if self.dim == 2 {
             return to3(self.project_edge(i, [p[0], p[1]]));
         }
@@ -393,6 +446,14 @@ impl Complex {
     }
     /// Representative points of the facet (corners, edge middles, an interior point), used for congruence checks.
     pub fn facet_samples(&self, i: u32) -> Vec<V3> {
+        let v = self.facet_samples_internal(i);
+        if self.dim == 3 {
+            v.into_iter().map(|p| self.wv(p)).collect()
+        } else {
+            v
+        }
+    }
+    fn facet_samples_internal(&self, i: u32) -> Vec<V3> {
         if self.dim == 2 {
             let (c, t0, t1) = self.curve_of(i);
             return (0..=6).map(|k| to3(c.eval(t0 + (t1 - t0) * k as f64 / 6.0))).collect();

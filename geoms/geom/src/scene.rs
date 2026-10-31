@@ -185,6 +185,8 @@ pub struct Scene {
     pub bounds: Aabb,
     pub warnings: Vec<String>,
     pub naming: NameScheme,
+    /// the stack axis (0, 1, 2) of a prismatic 3D model; the internal frame is `(axis+1, axis+2, axis)`
+    pub axis: usize,
     /// (feature, role, tag) added by the operations (Cut: `symmetry`)
     pub auto_tags: Vec<(FeatureId, String, String)>,
 }
@@ -235,7 +237,37 @@ impl Scene {
     }
 }
 
+/// The sweep axis shared by all cylinders and extrusions of a model (z when there are none).
+pub fn stack_axis(list: &FeatureList) -> GeomResult<usize> {
+    let mut found: Option<(usize, &str)> = None;
+    for f in list.features.iter().filter(|f| !f.suppressed) {
+        let a = match &f.op {
+            Op::Cylinder { axis, .. } | Op::Extrude { axis, .. } => axis.index(),
+            _ => continue,
+        };
+        match found {
+            None => found = Some((a, &f.name)),
+            Some((b, n)) if b != a => {
+                return Err(GeomError(format!(
+                    "'{n}' runs along {} but '{}' along {}: prismatic solids of one model must share a sweep axis (mixed axes need curved-surface intersections, which are not implemented)",
+                    ["x", "y", "z"][b],
+                    f.name,
+                    ["x", "y", "z"][a]
+                )));
+            }
+            _ => {}
+        }
+    }
+    Ok(found.map_or(2, |x| x.0))
+}
+
+/// Internal axis `i` is world axis `perm[i]`.
+pub fn axis_perm(a: usize) -> [usize; 3] {
+    [(a + 1) % 3, (a + 2) % 3, a]
+}
+
 struct Builder<'a> {
+    perm: [usize; 3],
     list: &'a FeatureList,
     env: &'a Env,
     cache: &'a mut Cache,
@@ -257,7 +289,8 @@ impl Builder<'_> {
         Ok([self.ev(&e[0], f, what)?, self.ev(&e[1], f, what)?])
     }
     fn ev3(&self, e: &[crate::expr::Expr; 3], f: &Feature, what: &str) -> GeomResult<V3> {
-        Ok([self.ev(&e[0], f, what)?, self.ev(&e[1], f, what)?, self.ev(&e[2], f, what)?])
+        let w = [self.ev(&e[0], f, what)?, self.ev(&e[1], f, what)?, self.ev(&e[2], f, what)?];
+        Ok([w[self.perm[0]], w[self.perm[1]], w[self.perm[2]]])
     }
     fn dim(&self) -> u8 {
         self.list.dim
@@ -275,9 +308,9 @@ impl Builder<'_> {
                 Xf3 { xy: Xf2::translate([v[0], v[1]]), zs: 1.0, zt: v[2] }
             }
             TStep::Rotate { axis, deg, about } => {
-                if *axis != Axis::Z {
+                if axis.index() != self.perm[2] {
                     return Err(GeomError(format!(
-                        "Transform '{}' rotates about the {} axis; only rotations about z are supported (prismatic solids stay prismatic)",
+                        "Transform '{}' rotates about the {} axis; prismatic solids can only turn about their sweep axis (a rotation about another axis makes the model polyhedral, which cannot contain curved solids)",
                         f.name,
                         axis.name()
                     )));
@@ -288,12 +321,13 @@ impl Builder<'_> {
             }
             TStep::Mirror { axis, at } => {
                 let at = self.ev(at, f, "mirror position")?;
-                match axis {
-                    Axis::Z if three => Xf3 { xy: Xf2::ID, zs: -1.0, zt: 2.0 * at },
-                    Axis::Z => {
+                let k = self.perm.iter().position(|&w| w == axis.index()).unwrap_or(2);
+                match k {
+                    2 if three => Xf3 { xy: Xf2::ID, zs: -1.0, zt: 2.0 * at },
+                    2 => {
                         return Err(GeomError(format!("Transform '{}' mirrors a 2D profile across a z plane", f.name)))
                     }
-                    a => xy(Xf2::mirror(a.index(), at)),
+                    k => xy(Xf2::mirror(k, at)),
                 }
             }
             TStep::Scale { factor, about } => {
@@ -326,7 +360,7 @@ impl Builder<'_> {
         }
         let name = format!("{}{}", f.name, suffix);
         let z = if self.dim() == 3 { xf.interval(zl) } else { (0.0, 0.0) };
-        let prim = Prim::new_styled(f.id, name, shape, xf.xy, false, style, z)?;
+        let prim = Prim::new_styled(f.id, name, shape, xf.xy, false, style, z, self.perm[2])?;
         let prim = match self.cache.prims.get(&prim.key) {
             Some(p) => {
                 self.cache.stats.prims_cached += 1;
@@ -465,15 +499,8 @@ impl Builder<'_> {
                 pos("z extent", (a[2] - b[2]).abs())?;
                 self.leaf(f, LShape::Rect { lo, hi }, xf, suffix, Style::Box, (a[2].min(b[2]), a[2].max(b[2])))
             }
-            Op::Cylinder { base, axis, r, h } => {
+            Op::Cylinder { base, r, h, .. } => {
                 solid_only(self)?;
-                if *axis != Axis::Z {
-                    return Err(GeomError(format!(
-                        "Cylinder '{}' has axis {}; this build supports cylinders along z (the stack direction) only",
-                        f.name,
-                        axis.name()
-                    )));
-                }
                 let (c, r, h) = (self.ev3(base, f, "base")?, self.ev(r, f, "radius")?, self.ev(h, f, "height")?);
                 pos("radius", r)?;
                 pos("height", h.abs())?;
@@ -514,7 +541,7 @@ impl Builder<'_> {
                 self.memo.insert(key, self.prims.len() - 1);
                 Ok(Node::Prim(self.prims.len() - 1))
             }
-            Op::Extrude { profile, z0, z1, taper_deg } => {
+            Op::Extrude { profile, z0, z1, taper_deg, .. } => {
                 if taper_deg.is_some() {
                     return Err(GeomError(format!("Extrude '{}' is tapered: tapered solids are polyhedral and are handled by the planar path (internal dispatch error)", f.name)));
                 }
@@ -550,9 +577,9 @@ impl Builder<'_> {
                             Xf3 { xy: Xf2::translate([s[0] * i as f64, s[1] * i as f64]), zs: 1.0, zt: s[2] * i as f64 }
                         }
                         PatternKind::Polar { axis, center, total_deg } => {
-                            if *axis != Axis::Z {
+                            if axis.index() != self.perm[2] {
                                 return Err(GeomError(format!(
-                                    "Pattern '{}' rotates about {}; use z",
+                                    "Pattern '{}' rotates about {}; use the sweep axis",
                                     f.name,
                                     axis.name()
                                 )));
@@ -610,7 +637,18 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
         .ok_or_else(|| GeomError("the model has no Overlay feature; add one that lists the regions".into()))?;
     let Op::Overlay { regions, pins, naming } = &overlay.op else { unreachable!() };
     let index = list.features.iter().enumerate().map(|(i, f)| (f.id, i)).collect();
-    let mut b = Builder { list, env: &env, cache, prims: vec![], memo: HashMap::new(), index, depth: 0, extrude: None };
+    let axis = if list.dim == 3 { stack_axis(list)? } else { 2 };
+    let mut b = Builder {
+        perm: axis_perm(axis),
+        list,
+        env: &env,
+        cache,
+        prims: vec![],
+        memo: HashMap::new(),
+        index,
+        depth: 0,
+        extrude: None,
+    };
     let mut rx: Vec<RegionX> = vec![];
     let mut warnings = vec![];
     for r in regions {
@@ -657,8 +695,16 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
             let (z0, z1) = if keep_up { (zc, zc + big_z) } else { (zc - big_z, zc) };
             let lo = [scene_lo(&b.prims, 0) - big_z, scene_lo(&b.prims, 1) - big_z];
             let hi = [lo[0] + 3.0 * big_z + diag, lo[1] + 3.0 * big_z + diag];
-            let mut p =
-                Prim::new_styled(f.id, f.name.clone(), LShape::Rect { lo, hi }, Xf2::ID, true, Style::Box, (z0, z1))?;
+            let mut p = Prim::new_styled(
+                f.id,
+                f.name.clone(),
+                LShape::Rect { lo, hi },
+                Xf2::ID,
+                true,
+                Style::Box,
+                (z0, z1),
+                b.perm[2],
+            )?;
             p.caps = if keep_up {
                 ["cut".to_string(), "top".to_string()]
             } else {
@@ -680,7 +726,16 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
                 (0.0, 0.0)
             };
             let style = if dim == 3 { Style::Extrude } else { Style::Plain };
-            let mut p = Prim::new_styled(f.id, f.name.clone(), LShape::Poly { pts, names }, Xf2::ID, true, style, z)?;
+            let mut p = Prim::new_styled(
+                f.id,
+                f.name.clone(),
+                LShape::Poly { pts, names },
+                Xf2::ID,
+                true,
+                style,
+                z,
+                b.perm[2],
+            )?;
             for sg in &mut p.segs {
                 if sg.role == "side:cut" {
                     sg.role = "cut".to_string();
@@ -733,7 +788,9 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
                 k /= 3;
             }
             let ok = c != [0, 0, 0]
-                && (0..dim).all(|a| c[a] == 0 || sel.contains(&if c[a] < 0 { all[2 * a] } else { all[2 * a + 1] }));
+                && (0..dim).all(|a| {
+                    c[a] == 0 || sel.contains(&if c[a] < 0 { all[2 * b.perm[a]] } else { all[2 * b.perm[a] + 1] })
+                });
             if ok {
                 combos.push(c);
             }
@@ -750,11 +807,12 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
                 0 => (win.lo[k], win.hi[k]),
                 _ => (win.hi[k], win.hi[k] + t),
             };
-            let piece = (0..dim)
+            let mut toks: Vec<(usize, String)> = (0..dim)
                 .filter(|&a| c[a] != 0)
-                .map(|a| format!("{}{}", ["x", "y", "z"][a], if c[a] < 0 { "min" } else { "max" }))
-                .collect::<Vec<_>>()
-                .join("_");
+                .map(|a| (b.perm[a], format!("{}{}", ["x", "y", "z"][b.perm[a]], if c[a] < 0 { "min" } else { "max" })))
+                .collect();
+            toks.sort();
+            let piece = toks.into_iter().map(|t| t.1).collect::<Vec<_>>().join("_");
             let (x, y) = (rng(0), rng(1));
             let (style, z) = if dim == 3 { (Style::Box, rng(2)) } else { (Style::Plain, (0.0, 0.0)) };
             let prim = Prim::new_styled(
@@ -765,6 +823,7 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
                 true,
                 style,
                 z,
+                b.perm[2],
             )?;
             b.prims.push(Arc::new(prim));
             pieces.push((Node::Prim(b.prims.len() - 1), *c, piece));
@@ -837,6 +896,7 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
         bounds,
         warnings,
         naming: *naming,
+        axis,
         auto_tags,
     })
 }

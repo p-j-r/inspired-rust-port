@@ -159,6 +159,9 @@ pub fn build(cx: &Complex) -> (Vec<Edge3>, Vec<Vertex>) {
 impl Complex {
     /// Point of a 3D edge at fraction `u` of its parameter range.
     pub fn edge3_point(&self, e: u32, u: f64) -> V3 {
+        self.wv(self.edge3_point_internal(e, u))
+    }
+    fn edge3_point_internal(&self, e: u32, u: f64) -> V3 {
         let u = u.clamp(0.0, 1.0);
         if let EdgeGeom::Segment { a, b } = self.edges3[e as usize].geom {
             return add3(a, mul3(sub3(b, a), u));
@@ -180,6 +183,10 @@ impl Complex {
 
     /// Closest point of a 3D edge to `p`, with its fraction.
     pub fn edge3_closest(&self, e: u32, p: V3) -> (V3, f64) {
+        let (q, u) = self.edge3_closest_internal(e, self.iv(p));
+        (self.wv(q), u)
+    }
+    fn edge3_closest_internal(&self, e: u32, p: V3) -> (V3, f64) {
         if let EdgeGeom::Segment { a, b } = self.edges3[e as usize].geom {
             let d = sub3(b, a);
             let u = (dot3(sub3(p, a), d) / dot3(d, d)).clamp(0.0, 1.0);

@@ -415,9 +415,10 @@ impl DGeom {
 
 impl Prim {
     pub fn new(feature: u32, name: String, shape: LShape, xf: Xf2, aux: bool) -> GeomResult<Prim> {
-        Prim::new_styled(feature, name, shape, xf, aux, Style::Plain, (0.0, 0.0))
+        Prim::new_styled(feature, name, shape, xf, aux, Style::Plain, (0.0, 0.0), 2)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_styled(
         feature: u32,
         name: String,
@@ -426,6 +427,7 @@ impl Prim {
         aux: bool,
         style: Style,
         z: (f64, f64),
+        axis: usize,
     ) -> GeomResult<Prim> {
         let mut segs: Vec<DSeg> =
             shape.local_segs().into_iter().map(|(g, role)| DSeg { geom: g.map(&xf), role }).collect();
@@ -438,22 +440,26 @@ impl Prim {
             }
             segs.reverse();
         }
+        let names = ["x", "y", "z"];
         for s in &mut segs {
             s.role = match style {
                 Style::Plain => continue,
                 Style::Extrude => format!("side:{}", s.role),
                 Style::Cylinder => "side".to_string(),
-                Style::Box => match s.role.as_str() {
-                    "left" => "xmin",
-                    "right" => "xmax",
-                    "bottom" => "ymin",
-                    _ => "ymax",
+                Style::Box => {
+                    // internal x and y are the world axes after `axis` (cyclic); roles carry the world names
+                    let (nx, ny) = (names[(axis + 1) % 3], names[(axis + 2) % 3]);
+                    match s.role.as_str() {
+                        "left" => format!("{nx}min"),
+                        "right" => format!("{nx}max"),
+                        "bottom" => format!("{ny}min"),
+                        _ => format!("{ny}max"),
+                    }
                 }
-                .to_string(),
             };
         }
         let caps = if style == Style::Box {
-            ["zmin".to_string(), "zmax".to_string()]
+            [format!("{}min", names[axis]), format!("{}max", names[axis])]
         } else {
             ["bottom".to_string(), "top".to_string()]
         };
@@ -464,7 +470,8 @@ impl Prim {
         }
         let mut h = Hasher64::new();
         shape.hash(&mut h);
-        h.u64(style as u64)
+        h.u64(axis as u64)
+            .u64(style as u64)
             .f64(z.0)
             .f64(z.1)
             .f64(xf.m[0][0])

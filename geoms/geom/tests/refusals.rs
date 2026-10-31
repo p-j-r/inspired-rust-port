@@ -140,14 +140,13 @@ fn unsupported_3d_content_is_refused_with_the_remedy() {
     m.overlay(&[("a", a)]);
     m.cut("slant", (1.0, 0.0, 1.0), 0.5, Keep::Below);
     assert!(refused(&m).contains("Cylinder 'pin'") && refused(&m).contains("slanted"));
+    // cylinders along different axes in one model
     let e = three_d(|m| {
-        let a = m.push(
-            "c",
-            Op::Cylinder { base: [0.0.into(), 0.0.into(), 0.0.into()], axis: Axis::X, r: 0.5.into(), h: 1.0.into() },
-        );
-        vec![("a", a)]
+        let a = m.cylinder_along("along_x", Axis::X, (0.0, 0.0, 0.0), 0.5, 1.0);
+        let b = m.cylinder("along_z", (3.0, 0.0, 0.0), 0.5, 1.0);
+        vec![("a", a), ("b", b)]
     });
-    assert!(e.contains("Cylinder 'c'") && e.contains("along z"), "{e}");
+    assert!(e.contains("'along_x' runs along x") && e.contains("'along_z' along z"), "{e}");
     let e = three_d(|m| {
         let a = m.cylinder("pin", (0.0, 0.0, 0.0), 0.5, 1.0);
         let t = m.push(

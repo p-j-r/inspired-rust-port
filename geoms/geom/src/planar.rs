@@ -21,12 +21,13 @@ use std::sync::Arc;
 
 /// True when the model needs the polyhedral path.
 pub fn needs_planar(list: &FeatureList) -> bool {
+    let sweep = crate::scene::stack_axis(list).unwrap_or(2);
     list.dim == 3
         && list.features.iter().filter(|f| !f.suppressed).any(|f| match &f.op {
             Op::Transform { steps, .. } => {
-                steps.iter().any(|s| matches!(s, TStep::Rotate { axis, .. } if *axis != Axis::Z))
+                steps.iter().any(|s| matches!(s, TStep::Rotate { axis, .. } if axis.index() != sweep))
             }
-            Op::Pattern { kind: PatternKind::Polar { axis, .. }, .. } => *axis != Axis::Z,
+            Op::Pattern { kind: PatternKind::Polar { axis, .. }, .. } => axis.index() != sweep,
             Op::Extrude { taper_deg, .. } => taper_deg.is_some(),
             Op::Cut { normal, .. } => {
                 let nz = |e: &crate::expr::Expr| !matches!(e, crate::expr::Expr::Num(v) if *v == 0.0);
@@ -219,7 +220,7 @@ impl PB<'_> {
                 }
                 Ok(self.leaf(f, rings_of_box(lo, hi), xf, suffix, ""))
             }
-            Op::Extrude { profile, z0, z1, taper_deg } => {
+            Op::Extrude { profile, z0, z1, taper_deg, .. } => {
                 let (a, b) = (self.ev(z0, f, "z0")?, self.ev(z1, f, "z1")?);
                 if (b - a).abs() <= 0.0 {
                     return Err(GeomError(format!("Extrude '{}' has zero height", f.name)));
@@ -387,11 +388,102 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
                 }
                 auto_tags.push((f.id, "cut".to_string(), "symmetry".to_string()));
             }
-            Op::Pml { .. } => {
-                return Err(GeomError(format!(
-                    "Pml '{}' is not supported together with rotated, tapered or slanted geometry in this build",
-                    f.name
-                )))
+            Op::Pml { window, sides, thickness, layers, grading, regions: only } => {
+                let (t, nl, gr) =
+                    (b.ev(thickness, f, "thickness")?, b.ev(layers, f, "layers")?, b.ev(grading, f, "grading")?);
+                if t <= 0.0 || nl < 1.0 || gr <= 0.0 {
+                    return Err(GeomError(format!(
+                        "Pml '{}' needs thickness > 0, layers >= 1 and grading > 0",
+                        f.name
+                    )));
+                }
+                let mark = b.prims.len();
+                let wnode = b.inst(*window, &Aff3::ID, "")?;
+                let win = wnode.bbox(&b.prims);
+                b.prims.truncate(mark);
+                b.memo.retain(|_, v| *v < mark);
+                if win.is_empty() {
+                    return Err(GeomError(format!("Pml '{}' has an empty window", f.name)));
+                }
+                let all = [Side::XMin, Side::XMax, Side::YMin, Side::YMax, Side::ZMin, Side::ZMax];
+                let sel: Vec<Side> = if sides.is_empty() { all.to_vec() } else { sides.clone() };
+                let mut combos: Vec<[i8; 3]> = vec![];
+                for code in 0..27 {
+                    let (mut c, mut k) = ([0i8; 3], code);
+                    for ci in c.iter_mut() {
+                        *ci = (k % 3) as i8 - 1;
+                        k /= 3;
+                    }
+                    if c != [0, 0, 0]
+                        && (0..3)
+                            .all(|a| c[a] == 0 || sel.contains(&if c[a] < 0 { all[2 * a] } else { all[2 * a + 1] }))
+                    {
+                        combos.push(c);
+                    }
+                }
+                combos.sort_by_key(|c| {
+                    let n = c.iter().filter(|&&x| x != 0).count();
+                    let single = (0..3).find(|&a| c[a] != 0).map_or(0, |a| 2 * a + (c[a] > 0) as usize);
+                    (n, if n == 1 { single } else { 0 }, (0..3).rev().map(|a| c[a] + 1).collect::<Vec<_>>())
+                });
+                let mut pieces: Vec<(Node, [i8; 3], String)> = vec![];
+                for c in &combos {
+                    let rng = |k: usize| match c[k] {
+                        -1 => (win.lo[k] - t, win.lo[k]),
+                        0 => (win.lo[k], win.hi[k]),
+                        _ => (win.hi[k], win.hi[k] + t),
+                    };
+                    let piece = (0..3)
+                        .filter(|&a| c[a] != 0)
+                        .map(|a| format!("{}{}", ["x", "y", "z"][a], if c[a] < 0 { "min" } else { "max" }))
+                        .collect::<Vec<_>>()
+                        .join("_");
+                    let (x, y, z) = (rng(0), rng(1), rng(2));
+                    b.prims.push(Arc::new(Prim::new_poly(
+                        f.id,
+                        format!("{}[{piece}]", f.name),
+                        Poly3::new(rings_of_box([x.0, y.0, z.0], [x.1, y.1, z.1])),
+                        true,
+                    )));
+                    pieces.push((Node::Prim(b.prims.len() - 1), *c, piece));
+                }
+                let pad_bb: Vec<Aabb> = pieces.iter().map(|(n, _, _)| n.bbox(&b.prims)).collect();
+                let mut out: Vec<RegionX> = vec![];
+                for r in rx.iter() {
+                    let candidate = r.pml.is_none()
+                        && r.parent.is_none()
+                        && matches!(r.kind, RegionKind::Material)
+                        && (only.is_empty() || only.contains(&r.name));
+                    if !candidate || r.expr == Node::Empty {
+                        out.push(r.clone());
+                        continue;
+                    }
+                    let eb = r.expr.bbox(&b.prims);
+                    let mut phys = r.clone();
+                    phys.expr = Node::Diff(Box::new(r.expr.clone()), pieces.iter().map(|p| p.0.clone()).collect());
+                    out.push(phys);
+                    for ((node, c, piece), bb) in pieces.iter().zip(&pad_bb) {
+                        if eb.overlaps(bb) {
+                            out.push(RegionX {
+                                name: format!("{}.pml_{piece}", r.name),
+                                kind: RegionKind::Pml,
+                                feature: r.feature,
+                                pinned_id: None,
+                                expr: Node::Inter(vec![r.expr.clone(), node.clone()]),
+                                parent: Some(r.name.clone()),
+                                pml: Some(crate::scene::PmlInfo {
+                                    feature: f.id,
+                                    sides: *c,
+                                    window: win,
+                                    thickness: t,
+                                    layers: nl,
+                                    grading: gr,
+                                }),
+                            });
+                        }
+                    }
+                }
+                rx = out;
             }
             _ => {}
         }
@@ -421,6 +513,7 @@ pub fn build_scene(list: &FeatureList, cache: &mut Cache) -> GeomResult<Scene> {
         bounds,
         warnings: vec![],
         naming: *naming,
+        axis: 2,
         auto_tags,
     })
 }
@@ -497,6 +590,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
     }
     let nsr = scene.regions.len();
     let mut fin: Vec<Option<u32>> = vec![None; nsr];
+    // generated (Pml) regions that end up with no face anywhere are dropped below
     let mut regions: Vec<Region> = vec![];
     for (i, r) in scene.regions.iter().enumerate() {
         if !matches!(r.kind, RegionKind::Hole | RegionKind::Void) {
@@ -634,6 +728,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
             bounds: plane_bounds,
             warnings: vec![],
             naming: NameScheme::Feature,
+            axis: 2,
             auto_tags: vec![],
         };
         let cx2 = arrange_with(&ps, cache, &classify, &synth).map_err(|e| {
@@ -870,6 +965,36 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         names.dedup();
         v.name = names.join("/");
     }
+    // drop generated (Pml) regions that have no face at all (painted over or outside every solid)
+    let mut used = vec![false; regions.len()];
+    for f in &faces {
+        for r in [f.first, f.second].into_iter().flatten() {
+            used[r as usize] = true;
+        }
+    }
+    let keep: Vec<bool> =
+        regions.iter().enumerate().map(|(i, r)| used[i] || scene.regions[r.scene_index].pml.is_none()).collect();
+    if keep.iter().any(|k| !k) {
+        let mut newid = vec![None; regions.len()];
+        let mut kept = vec![];
+        for (i, r) in regions.drain(..).enumerate() {
+            if keep[i] {
+                newid[i] = Some(kept.len() as u32);
+                kept.push(r);
+            }
+        }
+        regions = kept;
+        for f in &mut faces {
+            f.first = f.first.and_then(|r| newid[r as usize]);
+            f.second = f.second.and_then(|r| newid[r as usize]);
+        }
+        for r in &mut regions {
+            r.parent = r.parent.and_then(|p| newid[p as usize]);
+        }
+        for x in fin.iter_mut() {
+            *x = x.and_then(|r| newid[r as usize]);
+        }
+    }
     Ok(Complex {
         dim: 3,
         tol,
@@ -884,6 +1009,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         edges3: edges,
         stack: None,
         planar: plane_data,
+        axis: 2,
     })
 }
 
@@ -902,5 +1028,6 @@ fn empty_complex(tol: f64) -> Complex {
         edges3: vec![],
         stack: None,
         planar: vec![],
+        axis: 2,
     }
 }

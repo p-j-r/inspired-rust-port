@@ -68,13 +68,20 @@ impl Evaluated {
         let cx = self.complex();
         let scene = self.scene();
         let mut sim = SimData::default();
+        let cx_perm = crate::scene::axis_perm(scene.axis);
         for (i, r) in cx.regions.iter().enumerate() {
             if let Some(p) = &scene.regions[r.scene_index].pml {
                 sim.pml.push(PmlRegion {
                     region: i as u32,
                     parent: r.parent,
-                    window: p.window,
-                    sides: p.sides,
+                    window: to_world_box(&cx_perm, p.window),
+                    sides: {
+                        let mut w = [0i8; 3];
+                        for i in 0..3 {
+                            w[cx_perm[i]] = p.sides[i];
+                        }
+                        w
+                    },
                     thickness: p.thickness,
                     layers: p.layers,
                     grading: p.grading,
@@ -219,4 +226,16 @@ impl Oracle<'_> {
             _ => None,
         }
     }
+}
+
+fn to_world_box(perm: &[usize; 3], b: Aabb) -> Aabb {
+    if b.is_empty() {
+        return b;
+    }
+    let (mut lo, mut hi) = ([0.0; 3], [0.0; 3]);
+    for i in 0..3 {
+        lo[perm[i]] = b.lo[i];
+        hi[perm[i]] = b.hi[i];
+    }
+    Aabb { lo, hi }
 }

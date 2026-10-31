@@ -415,3 +415,110 @@ fn tri_area(p: &[[f64; 3]], t: &[u32; 3]) -> f64 {
     let cr = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
     0.5 * (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt()
 }
+
+#[test]
+fn cylinders_and_extrusions_along_x_and_y() {
+    // a block with a cavity drilled along each axis: volume, names and projection agree with the z version
+    let build = |axis: Axis| {
+        let mut m = Model::new_3d();
+        let b = m.box_("block", (0.0, 0.0, 0.0), (3.0, 4.0, 5.0));
+        let base = match axis {
+            Axis::X => (-1.0, 2.0, 2.5),
+            Axis::Y => (1.5, -1.0, 2.5),
+            Axis::Z => (1.5, 2.0, -1.0),
+        };
+        let len = match axis {
+            Axis::X => 5.0,
+            Axis::Y => 6.0,
+            Axis::Z => 7.0,
+        };
+        let c = m.cylinder_along("cav", axis, base, 0.4, len);
+        let d = m.difference("d", b, &[c]);
+        m.overlay(&[("block", d)]);
+        m.eval(Tier::Complex).unwrap()
+    };
+    let extent = [3.0, 4.0, 5.0];
+    for (k, axis) in [Axis::X, Axis::Y, Axis::Z].into_iter().enumerate() {
+        let ev = build(axis);
+        ev.complex().check().unwrap();
+        assert!(close(ev.volume(0), 60.0 - PI * 0.16 * extent[k]), "{axis:?}");
+        let mut names: Vec<&str> = ev.faces().iter().map(|f| f.name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names,
+            ["block.xmax", "block.xmin", "block.ymax", "block.ymin", "block.zmax", "block.zmin", "cav.side"],
+            "{axis:?}"
+        );
+        assert_eq!((ev.faces().len(), ev.edges3().len()), (7, 14), "{axis:?}");
+        let b = ev.bounds();
+        // the cutter is longer than the block along its own axis (5, 6, 7) and the block fixes the other two extents
+        let want = [[5.0, 4.0, 5.0], [3.0, 6.0, 5.0], [3.0, 4.0, 7.0]][k];
+        assert!(
+            close(b.hi[0] - b.lo[0], want[0]) && close(b.hi[1] - b.lo[1], want[1]) && close(b.hi[2] - b.lo[2], want[2]),
+            "bounds in world axes {axis:?}: {b:?}"
+        );
+        // the cavity wall is a cylinder about the right axis, 0.4 from the axis line
+        let side = ev.resolve(&Selector::parse("name(cav.side)").unwrap()).unwrap().set.ids[0];
+        let probe = [[2.9, 2.0, 2.5], [1.5, 3.9, 2.5], [1.5, 2.0, 4.9]][k];
+        let q = ev.oracle().project(probe, EntityRef::Face(side)).unwrap();
+        let along = k;
+        let off: Vec<usize> = (0..3).filter(|&i| i != along).collect();
+        let centre = [[0.0, 2.0, 2.5], [1.5, 0.0, 2.5], [1.5, 2.0, 0.0]][k];
+        let r = ((q[off[0]] - centre[off[0]]).powi(2) + (q[off[1]] - centre[off[1]]).powi(2)).sqrt();
+        assert!((r - 0.4).abs() < 1e-12 && (q[along] - probe[along]).abs() < 1e-12, "{axis:?}: {q:?}");
+        // a point inside the cavity is outside the solid, a point beside it inside
+        let mut inside = centre;
+        inside[along] = probe[along];
+        assert_eq!(ev.classify(inside), None, "{axis:?}");
+        let mut beside = inside;
+        beside[off[0]] += 0.6;
+        assert_eq!(ev.classify(beside), Some(0), "{axis:?}");
+        // the stuffing surface is a cylinder with the right axis
+        let cyl = ev.surfaces_for_stuffing().into_iter().find_map(|s| match s.surface {
+            geom::stack::Surface::Cylinder { axis, r, .. } => Some((axis, r)),
+            _ => None,
+        });
+        let (ax, r) = cyl.unwrap();
+        assert!((ax[k].abs() - 1.0).abs() < 1e-12 && (r - 0.4).abs() < 1e-15, "{axis:?}: {ax:?}");
+        // fractions and edges in world coordinates
+        let l = ev.bounds().diagonal();
+        for (u, v) in [(0.2, 0.3), (0.9, 0.6)] {
+            let p = ev.position_at(EntityRef::Face(side), geom::query::Fractions { u, v }).unwrap();
+            let g = ev.fractions_of(EntityRef::Face(side), p).unwrap();
+            let p2 = ev.position_at(EntityRef::Face(side), g).unwrap();
+            assert!(norm(p, p2) <= 1e-12 * l, "{axis:?}");
+        }
+        // the circle edges lie in planes perpendicular to the axis
+        for e in ev.edges3().iter().filter(|e| e.name.contains("cav.side")) {
+            assert!((e.bbox.hi[k] - e.bbox.lo[k]).abs() < 1e-12, "{axis:?}: edge not flat along its axis");
+        }
+    }
+    // an extrusion along x of a profile given in (y, z); the profile's circle sweeps a cylinder along x
+    let mut m = Model::new_3d();
+    let prof = m.rect("outline", (0.0, 0.0), (2.0, 3.0));
+    let ex = m.extrude_along("bar", Axis::X, prof, 1.0, 5.0);
+    m.overlay(&[("bar", ex)]);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    let b = ev.bounds();
+    assert!(close(b.lo[0], 1.0) && close(b.hi[0], 5.0) && close(b.hi[1], 2.0) && close(b.hi[2], 3.0));
+    assert!(close(ev.volume(0), 24.0));
+    assert!(
+        ev.faces().iter().any(|f| f.name == "outline.side:left") && ev.faces().iter().any(|f| f.name == "outline.top")
+    );
+    // a Pml around a window in a model swept along y keeps world sides and names
+    let mut m = Model::new_3d();
+    let big = m.box_("air", (-1.0, -1.0, -1.0), (2.0, 2.0, 2.0));
+    let rod = m.cylinder_along("rod", Axis::Y, (0.5, -0.5, 0.5), 0.1, 2.0);
+    let win = m.box_("window", (0.0, 0.0, 0.0), (1.0, 1.0, 1.0));
+    m.overlay(&[("air", big), ("rod", rod)]);
+    m.pml("pml", win, &[], 1.0, 4.0, 2.0);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    let corner =
+        ev.pml_regions().iter().find(|p| ev.regions()[p.region as usize].name == "air.pml_xmax_ymax_zmax").unwrap();
+    assert_eq!(corner.sides, [1, 1, 1]);
+    let face = ev.pml_regions().iter().find(|p| ev.regions()[p.region as usize].name == "air.pml_ymin").unwrap();
+    assert_eq!(face.sides, [0, -1, 0]);
+}

@@ -951,6 +951,7 @@ fn finish(
         faces: vec![],
         edges3: vec![],
         planar: vec![],
+        axis: 2,
         stack: None,
     })
 }

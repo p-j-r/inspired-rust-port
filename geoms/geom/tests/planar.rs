@@ -196,3 +196,25 @@ fn what_the_polyhedral_path_refuses() {
     });
     assert!(!e.is_empty());
 }
+
+#[test]
+fn pml_around_a_window_in_a_polyhedral_model() {
+    // a tilted block inside an air box; the window is the box minus a margin, with absorbing layers on all sides
+    let mut m = Model::new_3d();
+    let air = m.box_("air", (-2.0, -2.0, -2.0), (3.0, 3.0, 3.0));
+    let blk = m.box_("blk", (0.2, 0.2, 0.2), (0.8, 0.8, 0.8));
+    let t = m.transform("tilt", blk, vec![rot(Axis::X, 30.0, [0.5, 0.5, 0.5])]);
+    let win = m.box_("window", (-1.0, -1.0, -1.0), (2.0, 2.0, 2.0));
+    m.overlay(&[("air", air), ("block", t)]);
+    m.pml("pml", win, &[], 1.0, 4.0, 2.0);
+    let ev = m.eval(Tier::Complex).unwrap();
+    ev.complex().check().unwrap();
+    assert_eq!(ev.pml_regions().len(), 26);
+    assert!(close(ev.regions().iter().map(|r| r.measure).sum::<f64>(), 125.0));
+    let corner = ev.pml_regions().iter().find(|p| p.sides == [1, 1, 1]).unwrap();
+    assert_eq!(ev.regions()[corner.region as usize].name, "air.pml_xmax_ymax_zmax");
+    assert!(close(ev.volume(corner.region), 1.0));
+    // the tilted block lies in the physical part: its volume and its interface with the air are untouched
+    let b = ev.regions().iter().position(|r| r.name == "block").unwrap() as u32;
+    assert!(close(ev.volume(b), 0.6f64.powi(3)));
+}

@@ -210,8 +210,8 @@ impl Evaluated {
                     let pts = ov.discretize_edge(edge, DiscretizeOpts { max_dev, max_len: big });
                     let base = m.points.len() as u32;
                     for (_, p) in &pts {
-                        m.points.push([p[0], p[1], z0]);
-                        m.points.push([p[0], p[1], z1]);
+                        m.points.push(cx.wv([p[0], p[1], z0]));
+                        m.points.push(cx.wv([p[0], p[1], z1]));
                     }
                     for k in 0..pts.len() as u32 - 1 {
                         let (a, b, c, d) = (base + 2 * k, base + 2 * k + 1, base + 2 * k + 2, base + 2 * k + 3);
@@ -242,7 +242,7 @@ impl Evaluated {
                     let base = m.points.len() as u32;
                     for iu in 0..n {
                         for iv in 0..=n {
-                            m.points.push(b.point_at(iu as f64 / n as f64, iv as f64 / n as f64));
+                            m.points.push(cx.wv(b.point_at(iu as f64 / n as f64, iv as f64 / n as f64)));
                         }
                     }
                     let w = n as u32 + 1;
@@ -262,7 +262,7 @@ impl Evaluated {
                 }
                 FaceGeom::Cap { cell, z } => {
                     let base = m.points.len() as u32;
-                    m.points.extend(flat.points.iter().map(|p| [p[0], p[1], z]));
+                    m.points.extend(flat.points.iter().map(|p| cx.wv([p[0], p[1], z])));
                     for (t, &c) in flat.tris.iter().zip(&flat.tri_face) {
                         if c == cell {
                             m.tris.push([base + t[0], base + t[1], base + t[2]]);

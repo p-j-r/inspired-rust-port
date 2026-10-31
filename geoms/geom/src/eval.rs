@@ -48,7 +48,19 @@ impl Evaluator {
         } else {
             build_scene(list, &mut self.cache)?
         };
-        let bounds = scene.bounds;
+        let bounds = {
+            let (pm, b) = (crate::scene::axis_perm(scene.axis), scene.bounds);
+            let (mut lo, mut hi) = ([0.0; 3], [0.0; 3]);
+            for i in 0..3 {
+                lo[pm[i]] = b.lo[i];
+                hi[pm[i]] = b.hi[i];
+            }
+            if b.is_empty() {
+                b
+            } else {
+                Aabb { lo, hi }
+            }
+        };
         let mut warnings = scene.warnings.clone();
         let mut ev = Evaluated {
             list: list.clone(),
@@ -130,7 +142,8 @@ impl Evaluated {
     /// Region id containing `p` (painter rule), without building the arrangement.
     pub fn classify(&self, p: V3) -> Option<u32> {
         let s = self.scene();
-        let i = s.classify(p)?;
+        let pm = crate::scene::axis_perm(s.axis);
+        let i = s.classify([p[pm[0]], p[pm[1]], p[pm[2]]])?;
         match &self.complex {
             Some(c) => c.scene_to_region[i],
             None => Some(i as u32),
@@ -138,7 +151,9 @@ impl Evaluated {
     }
     /// Distance from `p` to the nearest primitive boundary, at most `margin`.
     pub fn sdf_bound(&self, p: V3, margin: f64) -> f64 {
-        self.scene().sdf_bound(p, margin)
+        let s = self.scene();
+        let pm = crate::scene::axis_perm(s.axis);
+        s.sdf_bound([p[pm[0]], p[pm[1]], p[pm[2]]], margin)
     }
     pub fn tol(&self) -> f64 {
         1e-9 * self.bounds.diagonal()

@@ -185,6 +185,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
             warnings: vec![],
             // numbering is applied to the 3D faces at the end; the layers keep role names so fragments can be matched and merged
             naming: if scene.naming == NameScheme::Numbered { NameScheme::Region } else { scene.naming },
+            axis: 2,
             auto_tags: vec![],
         };
         let cx = arrange(&ls, cache).map_err(|e| GeomError(format!("layer z = {z0:.6e}..{z1:.6e}: {}", e.0)))?;
@@ -275,6 +276,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         bounds: scene.bounds,
         warnings: vec![],
         naming: NameScheme::Feature,
+        axis: 2,
         auto_tags: vec![],
     };
     let mut overlay = arrange_with(&ov_scene, cache, &classify, &synth)?;
@@ -493,7 +495,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         }
     }
 
-    let stack = LayerStack { axis: Axis::Z, layers, overlay: overlay.clone() };
+    let stack = LayerStack { axis: [Axis::X, Axis::Y, Axis::Z][scene.axis], layers, overlay: overlay.clone() };
     let cx = Complex {
         dim: 3,
         tol,
@@ -507,6 +509,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
         faces,
         edges3: vec![],
         planar: vec![],
+        axis: 2,
         stack: Some(Box::new(stack)),
     };
     let mut cx = cx;
@@ -514,6 +517,7 @@ pub fn build(scene: &Scene, cache: &mut Cache) -> GeomResult<Complex> {
     let (edges3, vertices) = crate::topo3::build(&cx);
     cx.edges3 = edges3;
     cx.vertices = vertices;
+    cx.into_world_frame(scene.axis);
     Ok(cx)
 }
 
@@ -566,17 +570,17 @@ impl crate::eval::Evaluated {
                             Surface::Plane { n, d: n[0] * o[0] + n[1] * o[1] }
                         }
                         crate::curve::Curve::Circle { c, r } => {
-                            Surface::Cylinder { c: [c[0], c[1], 0.0], axis: [0.0, 0.0, 1.0], r: *r }
+                            Surface::Cylinder { c: cx.wv([c[0], c[1], 0.0]), axis: cx.wv([0.0, 0.0, 1.0]), r: *r }
                         }
                         _ => continue,
                     }
                 }
-                FaceGeom::Cap { z, .. } => Surface::Plane { n: [0.0, 0.0, 1.0], d: z },
+                FaceGeom::Cap { z, .. } => Surface::Plane { n: cx.wv([0.0, 0.0, 1.0]), d: z },
                 FaceGeom::Planar { plane, .. } => {
                     let pd = &cx.planar[plane as usize];
                     Surface::Plane { n: pd.n, d: pd.d }
                 }
-                FaceGeom::Quadric(crate::prim::Body::Sphere { c, r }) => Surface::Sphere { c, r },
+                FaceGeom::Quadric(crate::prim::Body::Sphere { c, r }) => Surface::Sphere { c: cx.wv(c), r },
                 FaceGeom::Quadric(crate::prim::Body::Torus { c, big, small }) => {
                     Surface::Torus { c, major: big, minor: small }
                 }

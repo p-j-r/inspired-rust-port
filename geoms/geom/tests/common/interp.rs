@@ -195,6 +195,14 @@ pub fn build(code: &str) -> Model {
             "extrude_tapered" => {
                 Some(m.extrude_tapered(&st(&a[0]), fid(&a[1], &ids), expr(&a[2]), expr(&a[3]), expr(&a[4])))
             }
+            "cylinder_along" => {
+                let A::Path(k) = &a[1] else { panic!() };
+                Some(m.cylinder_along(&st(&a[0]), axis_of(k), e3(&a[2]), expr(&a[3]), expr(&a[4])))
+            }
+            "extrude_along" => {
+                let A::Path(k) = &a[1] else { panic!() };
+                Some(m.extrude_along(&st(&a[0]), axis_of(k), fid(&a[2], &ids), expr(&a[3]), expr(&a[4])))
+            }
             "extrude" => Some(m.extrude(&st(&a[0]), fid(&a[1], &ids), expr(&a[2]), expr(&a[3]))),
             "ellipse" => Some(m.ellipse(&st(&a[0]), e2(&a[1]), e2(&a[2]), expr(&a[3]))),
             "polygon" | "polygon_named" => {
@@ -314,4 +322,12 @@ pub fn build(code: &str) -> Model {
         }
     }
     m.unwrap()
+}
+
+fn axis_of(p: &str) -> Axis {
+    match p {
+        "Axis::X" => Axis::X,
+        "Axis::Y" => Axis::Y,
+        _ => Axis::Z,
+    }
 }
