@@ -1,0 +1,32 @@
+# Standalone workspace root so this crate builds next to `meshers/` and `solvers/` without being listed in them.
+[workspace]
+
+[package]
+name = "geom"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.84"
+description = "Lean CSG-over-B-rep geometry kernel for FEM: feature lists, named regions, selectors, exact projection oracles"
+license = "BSD-2-Clause"
+repository = "https://github.com/p-j-r/inspired-rust-port"
+
+[features]
+default = []
+# Threaded pair finding in the arrangement; results are collected in index order, so output is bit-identical.
+parallel = ["dep:rayon"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+rayon = { version = "1", optional = true }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }
+proptest = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+[profile.test]
+opt-level = 2

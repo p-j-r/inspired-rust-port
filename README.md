@@ -6,6 +6,7 @@ each self-contained (own Cargo workspace, README, licence and notices) and writt
 | Folder | Content | Start here |
 |---|---|---|
 | [`solvers/`](solvers/README.md) | `rsolvers` (real-only Krylov / Krylov–Schur port following PETSc/SLEPc 3.19 behaviour) and `femsolve` (generic real/complex eigen-, linear-, nonlinear- and time-stepping solvers, preconditioners, low-rank and matrix-free tools, SLEPc/PETSc comparison harness) | [`solvers/docs/STATUS.md`](solvers/docs/STATUS.md), [`solvers/docs/EXPLAINER.md`](solvers/docs/EXPLAINER.md), [`solvers/PROVENANCE.md`](solvers/PROVENANCE.md) |
+| [`geoms/`](geoms/README.md) | `geom`: CSG-over-B-rep geometry kernel (feature lists, named regions and faces, selectors, label maps, layer stacks, exact projection) | [`geoms/HANDOFF.md`](geoms/HANDOFF.md), [`geoms/geom/README.md`](geoms/geom/README.md), [`geoms/PROVENANCE.md`](geoms/PROVENANCE.md) |
 | [`meshers/`](meshers/README.md) | `femmesh`: metric-based mesh adaptation, structured PML meshes, mixed-cell meshes, a compact lossless mesh/results format | [`meshers/HANDOFF.md`](meshers/HANDOFF.md), [`meshers/femmesh/docs/STATUS.md`](meshers/femmesh/docs/STATUS.md), [`meshers/PROVENANCE.md`](meshers/PROVENANCE.md) |
 
 ## Solvers: `solvers/`
@@ -28,3 +29,10 @@ mixed-cell meshes, a compact lossless mesh/results format). It is staging code t
 * Licence: BSD-2-Clause ([`meshers/femmesh/LICENSE`](meshers/femmesh/LICENSE)), the same terms as the solver ports in this repository.
 
 Repository-wide summary of origins and licences: [`NOTICES.md`](NOTICES.md).
+
+## Geometry: `geoms/`
+
+`geoms/geom` is a pure-Rust geometry kernel for the nyx FEM stack: a serialisable feature list (parameters, 2D profiles, 3D prismatic solids,
+Booleans, an ordered `Overlay` of named regions) evaluated into a region complex with provenance-based names, rule-based selectors, a compiled
+`LabelMap`, exact projection and layer-stack data for the meshers. Only `serde` is required. See [`geoms/HANDOFF.md`](geoms/HANDOFF.md)
+for the state (2D complete; 3D prismatic only), and [`geoms/PROVENANCE.md`](geoms/PROVENANCE.md). Licence: BSD-2-Clause.
